@@ -345,6 +345,35 @@ async function loadKeys(target = "#keys") {
   });
 }
 
+async function loadGmgnKey() {
+  const k = await api("/api/gmgn/key");
+  const chip = $("#gk-chip");
+  chip.className = `chip ${k.exists ? "ok" : "warn"}`;
+  chip.innerHTML = `<i></i>${k.exists ? "créée" : "à créer"}`;
+  const steps = `<ol style="margin:12px 0 0;padding-left:18px;line-height:1.8">
+      <li>Clique sur <b>Copier la clé publique</b>.</li>
+      <li>Sur <a href="https://gmgn.ai/ai" target="_blank" rel="noopener">gmgn.ai/ai</a>, colle-la dans <b>Upload Public Key</b>.</li>
+      <li>Laisse <b>Enable Reading</b> activé, active <b>Enable Trading</b> (double authentification requise), puis <b>Next</b>.</li>
+      <li>GMGN t'affiche ta <b>clé API</b> : colle-la ci-dessous dans « GMGN », puis <b>Enregistrer les clés</b>.</li></ol>`;
+  $("#gmgn-key").innerHTML = k.exists
+    ? `<p class="muted" style="margin-top:0">Cette clé prouve à GMGN que les ordres viennent de ton logiciel. Elle ne donne <b>aucun accès</b> à ton wallet. La partie secrète reste dans le coffre-fort de Windows.</p>
+       <textarea class="input mono" rows="4" readonly id="gk-pem" style="font-size:12px">${esc(k.public_pem)}</textarea>
+       <div class="row" style="margin-top:10px"><button class="btn gold" id="gk-copy">Copier la clé publique</button><span class="spacer"></span><button class="btn ghost sm" id="gk-replace">Remplacer la clé</button></div>${steps}`
+    : `<p class="muted" style="margin-top:0">Pour trader sur GMGN, le logiciel a besoin de sa propre clé de signature. Elle est créée sur ce PC et sa partie secrète ne le quitte jamais. Elle ne donne <b>aucun accès</b> à ton wallet.</p>
+       <button class="btn gold" id="gk-create">Créer ma clé GMGN</button>${steps}`;
+  const create = async (replace) => { await api("/api/gmgn/key", {replace}); toast("Clé GMGN créée. Copie la clé publique sur gmgn.ai/ai.", "ok"); loadGmgnKey(); };
+  if ($("#gk-create")) $("#gk-create").onclick = (e) => busy(e.currentTarget, "Création…", () => create(false));
+  if ($("#gk-replace")) $("#gk-replace").onclick = (e) => {
+    if (!confirm("Remplacer la clé ? Ta clé API GMGN actuelle ne fonctionnera plus : il faudra en recréer une sur gmgn.ai/ai.")) return;
+    busy(e.currentTarget, "…", () => create(true));
+  };
+  if ($("#gk-copy")) $("#gk-copy").onclick = async () => {
+    const pem = $("#gk-pem").value;
+    try { await navigator.clipboard.writeText(pem); } catch { $("#gk-pem").select(); document.execCommand("copy"); }
+    toast("Clé publique copiée. Colle-la sur gmgn.ai/ai.", "ok");
+  };
+}
+
 $("#btn-diag").onclick = (e) => busy(e.currentTarget, "Test en cours…", async () => {
   $("#diag-out").textContent = "Test en cours (10 à 60 secondes)…";
   const r = await api("/api/diagnose", {wallet: $("#diag-wallet").value.trim() || null});
@@ -419,7 +448,7 @@ $("#wz-skip").onclick = closeWizard;
 /* ================================================================ navigation */
 const LOADERS = {
   home: () => Promise.all([loadAgents(), loadOpps()]), agents: loadAgents, judge: loadDecisions, traders: loadTraders,
-  journal: loadJournal, settings: loadSettings, connections: () => loadKeys(), updates: () => loadUpdate(false), vps: async () => {},
+  journal: loadJournal, settings: loadSettings, connections: () => Promise.all([loadGmgnKey(), loadKeys()]), updates: () => loadUpdate(false), vps: async () => {},
 };
 function go(view) {
   if (!LOADERS[view]) view = "home";

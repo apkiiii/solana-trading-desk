@@ -8,3 +8,4 @@ keyring>=25               # clé privée dans le Gestionnaire d'identifiants Win
 aiohttp>=3.9,<4          # serveur local de l'interface (et du VPS)
 pyinstaller>=6.6          # fabrication de SolanaTradingDesk.exe (étape 11)
 pytest>=8                 # tests automatiques
+cryptography>=42          # tests : vérifie le format des clés GMGN

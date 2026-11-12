@@ -3,7 +3,7 @@
 Chaque nouvelle version publiée sur GitHub avec l'étiquette ``v<version>`` est proposée
 automatiquement dans l'application.
 """
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 RELEASE_NAME = "JUDGE et nouvelle interface"
 
 

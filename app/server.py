@@ -24,6 +24,7 @@ from core.validation import is_valid_address
 from core.version import RELEASE_NAME, __version__
 from data.database import Database, DatabaseError
 from engine.scheduler import entries_window_open, next_change
+from security.gmgn_keys import GmgnKeyError, GmgnKeyStore
 from security.secrets import SecretsError, load_secrets, mask, save_api_keys
 
 log = logging.getLogger(__name__)
@@ -41,8 +42,9 @@ def _error(message: str, status: int = 400) -> web.Response:
 
 
 class DeskServer:
-    def __init__(self, db: Database, *, check_updates: bool = True):
+    def __init__(self, db: Database, *, check_updates: bool = True, gmgn_keys: GmgnKeyStore | None = None):
         self.db = db
+        self.gmgn_keys = gmgn_keys or GmgnKeyStore()
         self.check_updates = check_updates
         self.last_seen = time.monotonic()
         self.update_info: updater.UpdateInfo | None = None
@@ -60,7 +62,7 @@ class DeskServer:
             response = await handler(request)
         except web.HTTPException:
             raise
-        except (SettingsError, SecretsError, DatabaseError, ValueError, PermissionError) as exc:
+        except (SettingsError, SecretsError, DatabaseError, GmgnKeyError, ValueError, PermissionError) as exc:
             return _error(str(exc), 400)
         except Exception as exc:  # noqa: BLE001
             log.exception("Erreur API %s", request.path)
@@ -92,6 +94,8 @@ class DeskServer:
         r.add_get("/api/keys", self.keys)
         r.add_post("/api/keys", self.save_keys)
         r.add_post("/api/diagnose", self.diagnose)
+        r.add_get("/api/gmgn/key", self.gmgn_key)
+        r.add_post("/api/gmgn/key", self.gmgn_key_create)
         r.add_get("/api/update", self.update_status)
         r.add_post("/api/update/check", self.update_check)
         r.add_post("/api/update/install", self.update_install)
@@ -346,6 +350,14 @@ class DeskServer:
         if wallet and not is_valid_address(wallet):
             return _error("Adresse invalide.")
         return _json({"output": await services.run_diagnostic(wallet)})
+
+    async def gmgn_key(self, _request: web.Request) -> web.Response:
+        return _json({"exists": self.gmgn_keys.exists(), "public_pem": self.gmgn_keys.public_pem()})
+
+    async def gmgn_key_create(self, request: web.Request) -> web.Response:
+        replace = bool((await request.json()).get("replace"))
+        created = self.gmgn_keys.create(replace=replace)
+        return _json({"exists": True, **created})
 
     # ----------------------------------------------------------- mises à jour
     def _update_payload(self) -> dict[str, Any]:

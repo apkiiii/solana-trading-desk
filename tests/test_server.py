@@ -21,9 +21,9 @@ def isolated(tmp_path, monkeypatch):
     return tmp_path
 
 
-def run_with_client(db, scenario):
+def run_with_client(db, scenario, keys=None):
     async def go():
-        desk = DeskServer(db, check_updates=False)
+        desk = DeskServer(db, check_updates=False, gmgn_keys=keys)
         async with TestClient(TestServer(desk.app)) as client:
             return await scenario(client, desk)
     return asyncio.run(go())
@@ -108,3 +108,19 @@ def test_agents_decisions_journal_and_quit(db, isolated):
         await asyncio.sleep(0.5)
         assert desk.quit_event.is_set()
     run_with_client(db, scenario)
+
+
+def test_gmgn_signing_key_flow(db, isolated):
+    from security.gmgn_keys import GmgnKeyStore
+    store = GmgnKeyStore(isolated, use_keyring=False)
+
+    async def scenario(client, _desk):
+        assert (await (await client.get("/api/gmgn/key")).json())["exists"] is False
+        created = await (await client.post("/api/gmgn/key", json={})).json()
+        assert created["public_pem"].startswith("-----BEGIN PUBLIC KEY-----")
+        assert "PRIVATE" not in str(created)
+        again = await client.post("/api/gmgn/key", json={})
+        assert again.status == 400
+        shown = await (await client.get("/api/gmgn/key")).json()
+        assert shown["public_pem"] == created["public_pem"]
+    run_with_client(db, scenario, keys=store)

@@ -139,7 +139,10 @@
       <section class="view" id="view-connections">
         <div class="page-head"><div><h1>Connexions & test</h1><p>Les clés servent à lire le marché et à passer les ordres. Elles restent sur cet ordinateur et ne sont jamais affichées en entier. Ne colle jamais ici une clé privée ou une phrase de récupération.</p></div></div>
         <div class="grid g2">
+          <div style="display:flex;flex-direction:column;gap:16px">
+          <div class="panel"><div class="panel-h"><h2>Clé de signature GMGN</h2><span class="chip" id="gk-chip"><i></i>—</span></div><div class="panel-b" id="gmgn-key"></div></div>
           <div class="panel"><div class="panel-h"><h2>Clés API</h2></div><div class="panel-b" id="keys"></div></div>
+          </div>
           <div class="panel"><div class="panel-h"><h2>Diagnostic</h2><button class="btn gold sm" id="btn-diag">Lancer le test</button></div><div class="panel-b">
             <input class="input mono" id="diag-wallet" placeholder="Optionnel : adresse d'un trader à tester">
             <div class="console" id="diag-out" style="margin-top:12px">Clique sur « Lancer le test » : connexions RPC, temps réel, prix, devis, liquidité, risque. Aucune transaction n'est envoyée.</div>
