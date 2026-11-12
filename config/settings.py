@@ -150,6 +150,8 @@ def validate_settings(data: Mapping[str, Any]) -> list[str]:
             errors.append("discovery.onchain_category doit être toporganicscore, toptraded ou toptrending.")
         if disc.get("onchain_interval", "1h") not in ("5m", "1h", "6h", "24h"):
             errors.append("discovery.onchain_interval doit être 5m, 1h, 6h ou 24h.")
+        if disc.get("onchain_method", "both") not in ("holders", "buyers", "both"):
+            errors.append("discovery.onchain_method doit être « holders », « buyers » ou « both ».")
         if disc.get("period") not in ("7d", "30d"):
             errors.append("discovery.period doit être « 7d » ou « 30d ».")
         if not 1 <= disc.get("candidates_per_cycle", 0) <= 20:

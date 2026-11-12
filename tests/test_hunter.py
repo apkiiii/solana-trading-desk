@@ -11,6 +11,7 @@ from agents.hunter import SOURCE_AUTO, HunterAgent, evaluate_wallet
 from config.settings import apply_user_change, load_settings
 from data.models import PriceInfo
 from tests.conftest import SOL, TOKEN, WALLET
+from tests.conftest import USDC as USDC_MINT
 
 NOW = datetime.now(UTC).replace(microsecond=0)
 
@@ -299,3 +300,41 @@ def test_onchain_search_finds_app_users_whose_fees_are_paid_by_a_relayer(db):
     assert found == 1                                   # 50 USDC à 150 $/SOL = 0,33 SOL >= 0,2
     assert db.get_candidate(user)["status"] == "new"
     assert db.get_candidate(relayer) is None            # le relais n'est pas un trader
+
+
+def test_holders_scan_keeps_real_wallets_of_tokens_that_pumped(db):
+    """Gros détenteurs des tokens en forte hausse : les pools et coffres (comptes de programmes) sont écartés."""
+    from agents.hunter import SYSTEM_PROGRAM
+    pumped = "Pump1111111111111111111111111111111111111111"
+    wallet, app_user, pool = addr(40), addr(41), addr(42)
+
+    class HolderJupiter(FakeJupiter):
+        async def top_tokens(self, category, interval, limit=20):
+            return [{"id": pumped, "symbol": "PMP", "liquidity": 80_000.0, "stats24h": {"priceChange": 85.0}},
+                    {"id": TOKEN, "symbol": "FLAT", "liquidity": 90_000.0, "stats24h": {"priceChange": 2.0}},
+                    {"id": USDC_MINT, "symbol": "USDC", "liquidity": 1e9, "tags": ["stable"],
+                     "stats24h": {"priceChange": 60.0}}]
+
+    class HolderRpc:
+        calls = []
+
+        async def get_token_largest_accounts(self, mint):
+            self.calls.append(mint)
+            return [("acc1", 900), ("acc2", 500), ("acc3", 400)]
+
+        async def get_multiple_accounts(self, addresses, encoding="jsonParsed", data_slice=None):
+            if encoding == "jsonParsed":
+                owners = {"acc1": pool, "acc2": wallet, "acc3": app_user}
+                return [{"data": {"parsed": {"info": {"owner": owners[a]}}}} for a in addresses]
+            table = {pool: {"owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"}, wallet: {"owner": SYSTEM_PROGRAM},
+                     app_user: None}
+            return [table[a] for a in addresses]
+
+    rpc = HolderRpc()
+    h = HunterAgent(None, db, load_settings(db), jupiter=HolderJupiter(), rpc=rpc, dex=ChainDex())
+    assert run(h.scan_holders(datetime.now(UTC))) == 2
+    assert rpc.calls == [pumped]                                  # seul le token en forte hausse est examiné
+    assert db.get_candidate(pool) is None                         # pool écarté
+    assert db.get_candidate(wallet)["stats"]["origin"] == "holder"
+    assert db.get_candidate(wallet)["stats"]["holder_of"][0]["symbol"] == "PMP"
+    assert db.get_candidate(app_user) is not None                 # utilisateur d'application (sans compte SOL)

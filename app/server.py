@@ -504,7 +504,8 @@ class DeskServer:
             try:
                 report = await HunterAgent(
                     getattr(providers, "gmgn", None), self.db, settings, jupiter=getattr(providers, "jupiter", None),
-                    rpc=getattr(providers, "public_rpc", None) or getattr(providers, "rpc", None),
+                    rpc=getattr(providers, "hunter_rpc", None) or getattr(providers, "public_rpc", None)
+                    or getattr(providers, "rpc", None),
                     dex=getattr(providers, "dex", None)).cycle()
             finally:
                 if hasattr(providers, "aclose"):

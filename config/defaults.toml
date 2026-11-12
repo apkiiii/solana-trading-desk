@@ -60,15 +60,20 @@ max_copied_loss_eur = 1.0         # nos copies de ce trader ont perdu 1 € : no
 swap_margin = 10.0                # un candidat remplace le plus faible s'il a 10 points de plus
 cooldown_hours = 6.0              # un trader écarté n'est pas repris avant 6 h
 # --- recherche sur la blockchain (aucune clé) : tokens actifs de Jupiter -> acheteurs -> historique noté par HEAD
-scan_minutes = 15                 # nouvelle liste d'acheteurs toutes les 15 min
+scan_minutes = 15                 # nouvelle liste de candidats toutes les 15 min
+onchain_method = "both"           # "holders" : gros détenteurs des tokens en forte hausse (rapide, 3 requêtes/token)
+                                  # "buyers" : acheteurs récents des tokens actifs ; "both" : les deux
+holders_tokens = 6                # tokens en forte hausse examinés
+min_gain_24h_pct = 30.0           # hausse minimale sur 24 h pour qu'un token soit examiné
+helius_daily_credits = 10000      # crédits Helius max/jour pour la recherche (au-delà : PublicNode, gratuit)
 onchain_category = "toporganicscore"  # tokens Jupiter : "toporganicscore", "toptraded" ou "toptrending"
 onchain_interval = "1h"           # "5m", "1h", "6h" ou "24h"
 onchain_tokens = 4                # tokens examinés par recherche
 onchain_pool_sample = 1000        # dernières signatures du token listées (1 requête ; les échecs sont sautés)
 onchain_tx_per_token = 90         # transactions réussies lues par token (mesuré : ~2 vrais acheteurs >= 0,2 SOL sur 90)
 min_buy_sol = 0.2                 # achats plus petits ignorés (bruit, robots)
-onchain_prefilter_per_cycle = 8   # candidats triés rapidement par passage (1 requête chacun)
-onchain_evals_per_cycle = 1       # historiques complets notés par passage (≈ 300 transactions chacun)
+onchain_prefilter_per_cycle = 12  # candidats triés rapidement par passage (1 requête chacun, en parallèle)
+onchain_evals_per_cycle = 2       # historiques complets notés par passage (≈ 300 transactions chacun)
 
 [execution]
 venue = "jupiter"                     # exécution : Jupiter, signée localement par le compte Phantom dédié au bot
@@ -86,7 +91,8 @@ timezone = "Europe/Paris"
 [providers.helius]
 rpc_url = "https://mainnet.helius-rpc.com/?api-key={key}"
 ws_url = "wss://mainnet.helius-rpc.com/?api-key={key}"
-requests_per_second = 8.0         # offre gratuite : 10/s, on garde une marge
+requests_per_second = 6.0         # offre gratuite : 10/s au total, partagés avec la recherche de traders
+hunter_requests_per_second = 4.0  # part réservée à HUNTER
 monthly_credit_budget = 900000    # offre gratuite : 1 000 000 crédits/mois
 max_transaction_version = 1
 

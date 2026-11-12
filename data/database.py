@@ -548,6 +548,11 @@ class Database:
             "credits = credits + excluded.credits, errors = errors + excluded.errors",
             (day, provider, requests, credits, errors))
 
+    def day_credits(self, provider: str) -> int:
+        row = self.query_one("SELECT COALESCE(SUM(credits), 0) AS c FROM api_usage WHERE provider = ? AND day = ?",
+                             (provider, utc_now().strftime("%Y-%m-%d")))
+        return int(row["c"]) if row else 0
+
     def month_credits(self, provider: str) -> int:
         month = utc_now().strftime("%Y-%m")
         row = self.query_one("SELECT COALESCE(SUM(credits), 0) AS c FROM api_usage WHERE provider = ? "

@@ -25,11 +25,12 @@ class Providers:
     rug: RugCheckClient
     gmgn: Any = None  # client GMGN (lecture seule) si une clé API GMGN est enregistrée
     public_rpc: Any = None  # RPC public Solana (sans clé) : recherche de traders par HUNTER
+    hunter_rpc: Any = None  # Helius réservé à HUNTER (plafond de crédits par jour), si une clé Helius existe
     keyless_rpc: bool = False  # True si tout le bot passe par le RPC public (aucune clé Helius)
 
     async def aclose(self) -> None:
         seen: set[int] = set()
-        for client in (self.rpc, self.jupiter, self.dex, self.rug, self.gmgn, self.public_rpc):
+        for client in (self.rpc, self.jupiter, self.dex, self.rug, self.gmgn, self.public_rpc, self.hunter_rpc):
             if client is not None and id(client) not in seen:
                 seen.add(id(client))
                 await client.aclose()
@@ -80,10 +81,22 @@ def build_providers(settings: Settings, secrets: ApiSecrets, db: Database | None
             limiter=AsyncRateLimiter(float(helius["requests_per_second"]), burst=4),
             max_transaction_version=int(helius.get("max_transaction_version", 0)),
             credit_budget=int(helius["monthly_credit_budget"]) if not secrets.rpc_url_override else None,
-            credits_used=(lambda: db.month_credits("helius")) if db is not None else None,
+            credits_used=(lambda: db.month_credits("helius") + db.month_credits("helius-hunter"))
+            if db is not None else None,
             **common)
     # Sans clé, un seul client public (les limites du RPC public sont par adresse IP).
     public_rpc = rpc if keyless else public_client()
+    hunter_rpc = None
+    if secrets.helius_api_key and not secrets.rpc_url_override:
+        daily = int(settings["discovery"].get("helius_daily_credits", 0))
+        if daily > 0:
+            hunter_rpc = SolanaRpcClient(
+                helius["rpc_url"].format(key=secrets.helius_api_key),
+                limiter=AsyncRateLimiter(float(helius.get("hunter_requests_per_second", 4.0)), burst=4),
+                max_transaction_version=int(helius.get("max_transaction_version", 0)),
+                credit_budget=daily, credits_used=(lambda: db.day_credits("helius-hunter")) if db is not None else None,
+                **common)
+            hunter_rpc.name = "helius-hunter"
 
     jup = providers["jupiter"]
     jup_rate = float(jup["requests_per_second"] if secrets.jupiter_api_key else jup["requests_per_second_keyless"])
@@ -99,7 +112,7 @@ def build_providers(settings: Settings, secrets: ApiSecrets, db: Database | None
                          limiter=AsyncRateLimiter(float(rug_cfg["requests_per_second"]), burst=1), **common)
     gmgn = build_gmgn(settings, secrets, db, transport=transport)
     return Providers(rpc=rpc, ws_url=ws_url, jupiter=jupiter, dex=dex, rug=rug, gmgn=gmgn, public_rpc=public_rpc,
-                     keyless_rpc=keyless)
+                     keyless_rpc=keyless, hunter_rpc=hunter_rpc)
 
 
 def build_gmgn(settings: Settings, secrets: ApiSecrets, db: Database | None = None, *,

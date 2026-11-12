@@ -139,6 +139,17 @@ class SolanaRpcClient(HttpProvider):
             transfer_fee_bps=transfer_fee_bps,
         )
 
+    async def get_multiple_accounts(self, addresses: list[str], *, encoding: str = "jsonParsed",
+                                    data_slice: dict[str, int] | None = None) -> list[dict[str, Any] | None]:
+        """Jusqu'à 100 comptes en une requête (None pour un compte inexistant)."""
+        if not addresses:
+            return []
+        options: dict[str, Any] = {"encoding": encoding, "commitment": "confirmed"}
+        if data_slice is not None:
+            options["dataSlice"] = data_slice
+        result = await self.call("getMultipleAccounts", [addresses[:100], options])
+        return list((result or {}).get("value") or [])
+
     async def get_token_largest_accounts(self, mint: str) -> list[tuple[str, int]]:
         result = await self.call("getTokenLargestAccounts", [mint, {"commitment": "confirmed"}])
         return [(item["address"], int(item["amount"])) for item in (result or {}).get("value", [])]

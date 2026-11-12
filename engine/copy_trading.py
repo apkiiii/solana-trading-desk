@@ -280,8 +280,7 @@ class CopyTradingEngine:
         """Un passage de HUNTER : recherche, évaluation et remplacement des traders."""
         settings = self._settings()
         report = await HunterAgent(getattr(self.providers, "gmgn", None), self.db, settings,
-                                   jupiter=self.providers.jupiter,
-                                   rpc=getattr(self.providers, "public_rpc", None) or self.providers.rpc,
+                                   jupiter=self.providers.jupiter, rpc=self.hunter_rpc(settings),
                                    dex=self.providers.dex).cycle(now=self.clock())
         save_report(self.db, report)
         for change in (report.data or {}).get("changes", []):
@@ -289,6 +288,14 @@ class CopyTradingEngine:
         if self.monitor is not None:
             self.monitor.set_wallets([t["address"] for t in self.db.list_traders(active_only=True)])
         return report
+
+    def hunter_rpc(self, settings: Any) -> Any:
+        """Helius (rapide) tant que le plafond de crédits du jour n'est pas atteint, sinon PublicNode (gratuit)."""
+        fast = getattr(self.providers, "hunter_rpc", None)
+        cap = int(settings["discovery"].get("helius_daily_credits", 0))
+        if fast is not None and cap > 0 and self.db.day_credits("helius-hunter") < cap:
+            return fast
+        return getattr(self.providers, "public_rpc", None) or self.providers.rpc
 
     async def _hunter_loop(self, stop: asyncio.Event) -> None:
         while not stop.is_set():

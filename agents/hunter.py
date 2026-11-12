@@ -40,6 +40,7 @@ from data.swap_parser import SOL_MINT, parse_swap
 SOURCE_AUTO = "auto"
 # Catégories Jupiter sans intérêt pour le copy trading de memecoins (stables, grosses cryptos, actions tokenisées…)
 EXCLUDED_TOKEN_TAGS = {"stable", "major", "stocks", "xstocks", "prestocks", "rwa", "equities", "lst"}
+SYSTEM_PROGRAM = "11111111111111111111111111111111"
 
 
 def _f(value: Any) -> float | None:
@@ -243,6 +244,77 @@ class HunterAgent:
 
     # ------------------------------------------------------- source blockchain
     async def scan_onchain(self, now: datetime) -> int:
+        method = self.cfg.get("onchain_method", "both")
+        found = 0
+        if method in ("holders", "both"):
+            found += await self.scan_holders(now)
+        if method in ("buyers", "both"):
+            found += await self.scan_buyers(now)
+        self.db.heartbeat("hunter_scan", "OK", f"{found} candidats repérés ({method})")
+        return found
+
+    def _note_candidate(self, wallet: str, now: datetime, *, origin: str, seen: int, extra: dict[str, Any]) -> None:
+        if any(t["address"] == wallet for t in self.db.list_traders()):
+            return
+        candidate = self.db.get_candidate(wallet)
+        if candidate is not None and candidate["status"] != "new":
+            return
+        previous = (candidate or {}).get("stats") or {}
+        stats = {**previous, "origin": "holder" if origin == "holder" or previous.get("origin") == "holder" else origin,
+                 "seen": int(previous.get("seen") or 0) + seen}
+        for key, value in extra.items():
+            merged = list(previous.get(key) or [])
+            for item in value:
+                if item not in merged:
+                    merged.append(item)
+            stats[key] = merged[:10]
+        self.db.upsert_candidate(wallet, score=None, status="new", reason=None, stats=stats, evaluated_at=now)
+
+    async def scan_holders(self, now: datetime) -> int:
+        """Gros détenteurs des tokens en forte hausse : souvent entrés tôt, avant la hausse (3 requêtes par token)."""
+        tokens: dict[str, dict[str, Any]] = {}
+        for category in ("toptrending", "toptraded"):
+            try:
+                for token in await self.jupiter.top_tokens(category, "24h", limit=30):
+                    tokens.setdefault(token["id"], token)
+            except Exception:  # noqa: BLE001
+                continue
+        skip = {self.settings["tokens"]["sol_mint"], self.settings["tokens"]["usdc_mint"],
+                self.settings["tokens"]["eurc_mint"]}
+        min_liquidity = float(self.settings["judge"]["min_liquidity_usd"])
+        min_gain = float(self.cfg.get("min_gain_24h_pct", 30.0))
+
+        def gain(token: dict[str, Any]) -> float:
+            return _f((token.get("stats24h") or {}).get("priceChange")) or 0.0
+
+        picks = [t for t in tokens.values() if t["id"] not in skip and (_f(t.get("liquidity")) or 0) >= min_liquidity
+                 and not (set(t.get("tags") or []) & EXCLUDED_TOKEN_TAGS) and gain(t) >= min_gain]
+        picks.sort(key=gain, reverse=True)
+        found: set[str] = set()
+        for token in picks[: int(self.cfg.get("holders_tokens", 6))]:
+            try:
+                largest = await self.rpc.get_token_largest_accounts(token["id"])
+                accounts = await self.rpc.get_multiple_accounts([address for address, _ in largest])
+                owners: list[str] = []
+                for account in accounts:
+                    owner = ((((account or {}).get("data") or {}).get("parsed") or {}).get("info") or {}).get("owner")
+                    if owner and owner not in owners:
+                        owners.append(owner)
+                infos = await self.rpc.get_multiple_accounts(owners, encoding="base64",
+                                                             data_slice={"offset": 0, "length": 0})
+            except Exception:  # noqa: BLE001
+                continue
+            label = {"symbol": token.get("symbol"), "gain_24h": round(gain(token), 1)}
+            for owner, info in zip(owners, infos, strict=False):
+                # Un wallet normal appartient au System Program (ou n'a pas de compte SOL : utilisateur
+                # d'application dont les frais sont payés par un relais). Le reste : pools, coffres, programmes.
+                if info is not None and info.get("owner") != SYSTEM_PROGRAM:
+                    continue
+                found.add(owner)
+                self._note_candidate(owner, now, origin="holder", seen=1, extra={"holder_of": [label]})
+        return len(found)
+
+    async def scan_buyers(self, now: datetime) -> int:
         """Acheteurs récents (et sérieux) des tokens les plus actifs selon Jupiter."""
         tokens = await self.jupiter.top_tokens(self.cfg["onchain_category"], self.cfg["onchain_interval"], limit=20)
         skip = {self.settings["tokens"]["sol_mint"], self.settings["tokens"]["usdc_mint"],
@@ -291,17 +363,8 @@ class HunterAgent:
                         continue
                     if value >= min_buy:
                         buyers.setdefault(owner, set()).add(mint)
-        followed = {t["address"] for t in self.db.list_traders()}
         for wallet, seen in buyers.items():
-            if wallet in followed:
-                continue
-            candidate = self.db.get_candidate(wallet)
-            if candidate is None or candidate["status"] == "new":
-                previous = (candidate or {}).get("stats") or {}
-                self.db.upsert_candidate(wallet, score=None, status="new", reason=None, stats={
-                    "origin": "onchain", "seen": int(previous.get("seen") or 0) + len(seen),
-                    "seen_tokens": sorted(set(previous.get("seen_tokens") or []) | seen)[:10]}, evaluated_at=now)
-        self.db.heartbeat("hunter_scan", "OK", f"{len(buyers)} acheteurs sur {len(mints[: int(self.cfg['onchain_tokens'])])} tokens")
+            self._note_candidate(wallet, now, origin="buyer", seen=len(seen), extra={"seen_tokens": sorted(seen)})
         return len(buyers)
 
     async def evaluate_onchain(self, address: str, now: datetime) -> tuple[float | None, str | None]:
@@ -366,19 +429,22 @@ class HunterAgent:
         ttl = float(self.settings["agents"]["head_cache_hours"]) * 60
         followed = [t["address"] for t in self.db.list_traders(active_only=True) if t.get("source") == SOURCE_AUTO]
         fresh = [c for c in self.db.list_candidates(500) if c["status"] == "new"]
-        fresh.sort(key=lambda c: int((c["stats"] or {}).get("seen") or 0), reverse=True)
+        fresh.sort(key=lambda c: ((c["stats"] or {}).get("origin") == "holder",
+                                  int((c["stats"] or {}).get("seen") or 0)), reverse=True)
         queue = [a for a in followed if self._needs_eval(a, now, ttl)] + [c["address"] for c in fresh]
         evaluated = []
-        full_done = 0
-        for address in queue[: int(self.cfg.get("onchain_prefilter_per_cycle", 8))]:
+        batch = queue[: int(self.cfg.get("onchain_prefilter_per_cycle", 12))]
+        results = await asyncio.gather(*(self.prefilter(a, now) for a in batch), return_exceptions=True)
+        passing = []
+        for address, result in zip(batch, results, strict=True):
+            if isinstance(result, BaseException):
+                evaluated.append((address, None, redact(f"{type(result).__name__}: {result}")))
+            elif result[0]:
+                evaluated.append((address, 0.0, result[0]))
+            else:
+                passing.append((address, result[1]))
+        for address, base in passing[: int(self.cfg["onchain_evals_per_cycle"])]:  # les autres : prochain passage
             try:
-                reason, base = await self.prefilter(address, now)
-                if reason:
-                    evaluated.append((address, 0.0, reason))
-                    continue
-                if full_done >= int(self.cfg["onchain_evals_per_cycle"]):
-                    break  # vérification complète au prochain passage
-                full_done += 1
                 score, reason = await self.full_evaluation(address, base, now)
             except Exception as exc:  # noqa: BLE001
                 score, reason = None, redact(f"{type(exc).__name__}: {exc}")
@@ -389,7 +455,7 @@ class HunterAgent:
         summary = (f"Blockchain : {len(roster)}/{self.target} traders copiés, {waiting} candidat(s) en attente "
                    f"de vérification")
         if found is not None:
-            summary += f", {found} acheteurs repérés sur les tokens actifs"
+            summary += f", {found} candidats repérés (gros détenteurs des tokens en hausse et acheteurs récents)"
         if changes:
             summary += " — " + "; ".join(changes[:3])
         status = OK if len(roster) >= self.target else WARN
