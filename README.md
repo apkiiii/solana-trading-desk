@@ -3,7 +3,7 @@
 Logiciel Windows personnel de copy trading sur Solana : 7 agents spécialisés et un JUDGE
 déterministe qui a le dernier mot sur chaque transaction.
 
-> **Version actuelle : 0.4 — moteur de données.**
+> **Version actuelle : 0.5 — les six agents.**
 > L'application s'installe, lit la blockchain, détecte les achats et ventes des traders suivis et
 > teste toutes les connexions. **Elle n'achète ni ne vend rien pour l'instant** : les agents, le
 > JUDGE et l'exécution arrivent par mises à jour, proposées directement dans l'application.
@@ -37,7 +37,7 @@ Ce dossier est conservé lors des mises à jour et de la désinstallation.
 | Version | Contenu | État |
 |---|---|---|
 | 0.4 | Application, moteur de données, mises à jour automatiques | ✅ |
-| 0.5 | Agents SCOUT, RISK, WHALE, HEAD, SNIPER, EXIT | à venir |
+| 0.5 | Agents SCOUT, RISK, WHALE, HEAD, SNIPER, EXIT | ✅ |
 | 0.6 | JUDGE (règles de sécurité déterministes) | à venir |
 | 0.7 | Copy trading + exécution (SIMULATION / PAPER / LIVE) | à venir |
 | 0.8 | Planificateur, DÉMARRER / STOPPER / ARRÊT D'URGENCE, moteur en arrière-plan | à venir |

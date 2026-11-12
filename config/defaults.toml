@@ -73,6 +73,17 @@ requests_per_second = 4.0         # limite publique : 300/min
 base_url = "https://api.rugcheck.xyz"
 requests_per_second = 1.0
 
+[agents]
+head_max_transactions = 300        # transactions analysées par trader (1 crédit Helius chacune)
+head_cache_hours = 6.0             # durée de validité d'une évaluation HEAD
+whale_sample_size = 25             # transactions récentes du pool examinées par WHALE
+whale_big_trade_pct_liquidity = 1.0  # une transaction >= 1 % de la liquidité est « grosse »
+whale_group_window_minutes = 30    # fenêtre pour repérer des achats groupés des traders suivis
+sniper_min_position_eur = 0.5      # en dessous, les frais mangent tout : pas de proposition
+sniper_min_edge_ratio = 2.0        # le gain moyen du trader doit valoir au moins 2x le coût aller-retour
+exit_trend_drop_m5_pct = 15.0      # chute de 15 % en 5 min sous le prix d'entrée = retournement
+agent_timeout_seconds = 20.0       # un agent qui dépasse ce délai est considéré indisponible
+
 [updates]
 repository = "apkiiii/solana-trading-desk"   # dépôt GitHub public qui publie les versions
 check_interval_hours = 6.0

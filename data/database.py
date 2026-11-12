@@ -357,6 +357,35 @@ class Database:
     def recent_source_events(self, limit: int = 50) -> list[dict[str, Any]]:
         return self.query_all("SELECT * FROM source_events ORDER BY detected_at DESC LIMIT ?", (limit,))
 
+    def source_events_for_mint(self, mint: str, since_block_time: int, side: str | None = None) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM source_events WHERE token_mint = ? AND block_time >= ?"
+        params: list[Any] = [mint, since_block_time]
+        if side:
+            sql += " AND side = ?"
+            params.append(side)
+        return self.query_all(sql + " ORDER BY block_time", tuple(params))
+
+    def source_events_for_wallet(self, wallet: str, since_block_time: int = 0) -> list[dict[str, Any]]:
+        return self.query_all("SELECT * FROM source_events WHERE wallet = ? AND block_time >= ? ORDER BY block_time",
+                              (wallet, since_block_time))
+
+    # ----------------------------------------------------------- rapports d'agents
+    def add_agent_report(self, agent: str, ref: str | None, status: str, confidence: float | None, summary: str,
+                         payload_json: str, created_at: datetime | None = None) -> int:
+        cursor = self.execute(
+            "INSERT INTO agent_reports (agent, ref, status, confidence, summary, payload_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)", (agent, ref, status, confidence, summary, payload_json, _iso(created_at)))
+        return int(cursor.lastrowid)
+
+    def latest_agent_reports(self, agent: str, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self.query_all("SELECT * FROM agent_reports WHERE agent = ? ORDER BY id DESC LIMIT ?", (agent, limit))
+        for row in rows:
+            row["payload"] = json.loads(row.pop("payload_json") or "{}")
+        return rows
+
+    def open_positions(self) -> list[dict[str, Any]]:
+        return self.query_all("SELECT * FROM positions WHERE status = 'OPEN' ORDER BY id")
+
     # ---------------------------------------------------------- consommation API
     def add_api_usage(self, provider: str, *, requests: int = 1, credits: int = 0, errors: int = 0) -> None:
         day = utc_now().strftime("%Y-%m-%d")

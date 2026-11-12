@@ -75,7 +75,8 @@ class MainWindow(QMainWindow):
         self.positions = PositionsPage(db)
         self.traders = TradersPage(db)
         self.updates = UpdatesPage(db, self.runner, self._update_found)
-        for page in (self.dashboard, AgentsPage(db), self.judge, self.positions, self.traders,
+        self.agents = AgentsPage(db, self.runner)
+        for page in (self.dashboard, self.agents, self.judge, self.positions, self.traders,
                      DiagnosticPage(self.runner), KeysPage(), self.updates):
             self.stack.addWidget(page)
         main_layout.addWidget(self.stack, 1)

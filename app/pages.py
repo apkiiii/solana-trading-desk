@@ -70,8 +70,8 @@ class DashboardPage(QWidget):
         QVBoxLayout(self).addWidget(page)
         self.layout().setContentsMargins(0, 0, 0, 0)
         layout.addWidget(banner(
-            f"Version {__version__} — moteur de données installé. Le trading automatique (agents, JUDGE, "
-            "exécution) arrivera par mises à jour successives : rien n'est acheté ni vendu pour l'instant."))
+            f"Version {__version__} — les agents analysent les traders (HEAD) et les tokens (RISK, WHALE). "
+            "Le JUDGE et l'exécution arrivent par mises à jour : rien n'est acheté ni vendu pour l'instant."))
         grid = QGridLayout()
         grid.setSpacing(12)
         self.cards = {
@@ -123,23 +123,94 @@ class DashboardPage(QWidget):
 
 
 # ------------------------------------------------------------------------- agents
+STATUS_COLORS = {"OK": theme.GREEN, "WARN": theme.AMBER, "BLOCK": theme.RED, "UNAVAILABLE": theme.RED,
+                 "IGNORED": theme.MUTED, "DUPLICATE": theme.MUTED}
+STATUS_TEXT = {"OK": "OK", "WARN": "Attention", "BLOCK": "Refus", "UNAVAILABLE": "Données manquantes",
+               "IGNORED": "Ignoré", "DUPLICATE": "Doublon"}
+
+
 class AgentsPage(QWidget):
-    def __init__(self, db: Database):
+    def __init__(self, db: Database, runner: TaskRunner):
         super().__init__()
         self.db = db
-        page, layout = _page("Agents", "Les sept agents spécialisés et leur dernière analyse.")
+        self.runner = runner
+        page, layout = _page("Agents", "Les sept agents spécialisés, leur dernière analyse et leur niveau de "
+                                       "confiance. Aucun agent ne peut acheter : seul le JUDGE décidera.")
         QVBoxLayout(self).addWidget(page)
         self.layout().setContentsMargins(0, 0, 0, 0)
         grid = QGridLayout()
         grid.setSpacing(12)
+        self.cards: dict[str, Card] = {}
         for index, (name, mission, version) in enumerate(AGENTS):
-            card = Card(name, "En préparation", f"{mission}\nDisponible à partir de la version {version}.")
-            card.value.setStyleSheet(f"color: {theme.MUTED}; font-size: 12pt;")
+            card = Card(name, "—", mission)
             if name == "JUDGE":
                 card.setStyleSheet(f"QFrame#card {{ border: 1px solid {theme.PURPLE}; }}")
+                card.set("En préparation", f"{mission}\nDisponible à partir de la version {version}.", theme.MUTED)
+            self.cards[name] = card
             grid.addWidget(card, index // 3, index % 3)
         layout.addLayout(grid)
-        layout.addStretch(1)
+
+        title = QLabel("Analyser un token (RISK + WHALE)")
+        title.setStyleSheet("font-size: 12pt; font-weight: 700; margin-top: 8px;")
+        layout.addWidget(title)
+        hint = QLabel("Colle l'adresse d'un token : les agents vérifient s'il serait achetable et revendable pour "
+                      "le montant maximal d'une position. Aucun achat n'est effectué.")
+        hint.setObjectName("muted")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        row = QHBoxLayout()
+        self.mint = QLineEdit()
+        self.mint.setPlaceholderText("Adresse du token (mint)")
+        self.analyze_button = QPushButton("Analyser")
+        self.analyze_button.setObjectName("primary")
+        self.analyze_button.clicked.connect(self.analyze)
+        row.addWidget(self.mint, 1)
+        row.addWidget(self.analyze_button)
+        layout.addLayout(row)
+        self.result = QTextBrowser()
+        self.result.setMinimumHeight(320)
+        self.result.setPlaceholderText("Le résultat de l'analyse s'affichera ici.")
+        layout.addWidget(self.result)
+        self.refresh()
+
+    def refresh(self) -> None:
+        for name, card in self.cards.items():
+            if name == "JUDGE":
+                continue
+            rows = self.db.latest_agent_reports(name, 1)
+            if not rows:
+                card.set("En attente", f"{dict((a, m) for a, m, _ in AGENTS)[name]}\nAucune analyse pour l'instant.",
+                         theme.MUTED)
+                continue
+            r = rows[0]
+            confidence = "" if r["confidence"] is None else f" — confiance {r['confidence'] * 100:.0f} %"
+            card.set(STATUS_TEXT.get(r["status"], r["status"]), f"{r['summary']}\n{r['created_at']}{confidence}",
+                     STATUS_COLORS.get(r["status"]))
+
+    def analyze(self) -> None:
+        mint = self.mint.text().strip()
+        if not is_valid_address(mint):
+            QMessageBox.warning(self, "Adresse invalide", "Cette adresse de token n'est pas valide.")
+            return
+        self.analyze_button.setEnabled(False)
+        self.result.setHtml("<p>Analyse en cours (devis Jupiter, liquidité, RugCheck, flux du pool)…</p>")
+        from app import services
+        self.runner.start(lambda _s: services.analyze_token(self.db, mint), on_done=self._done, on_error=self._error)
+
+    def _done(self, results: dict) -> None:
+        from app.services import format_report_html
+        self.analyze_button.setEnabled(True)
+        if results.get("eur_per_sol") is None:
+            self.result.setHtml(f"<p>Analyse impossible : {results.get('eur_reason')}</p>")
+            return
+        head = (f"<p>Montant testé : {results['amount_eur']:.2f} € "
+                f"(1 SOL = {results['eur_per_sol']:.2f} €)</p>")
+        self.result.setHtml(head + "".join(format_report_html(r, STATUS_COLORS) for r in results["reports"]))
+        self.refresh()
+
+    def _error(self, message: str) -> None:
+        self.analyze_button.setEnabled(True)
+        self.result.setHtml(f"<p style='color:{theme.RED}'>Erreur : {message}</p>")
 
 
 # -------------------------------------------------------------------------- JUDGE
@@ -220,19 +291,41 @@ class TradersPage(QWidget):
         form.addWidget(self.label, 1)
         form.addWidget(add)
         layout.addLayout(form)
-        self.table = make_table(["Adresse", "Nom", "Statut", "Score", "Ajouté le"])
+        self.table = make_table(["Adresse", "Nom", "Statut", "Score", "Réussite", "Drawdown", "Ajouté le"])
         self.table.setMinimumHeight(260)
         layout.addWidget(self.table)
-        toggle = QPushButton("Activer / désactiver le trader sélectionné")
+        buttons = QHBoxLayout()
+        self.evaluate_button = QPushButton("Évaluer le trader sélectionné (HEAD)")
+        self.evaluate_button.setObjectName("primary")
+        self.evaluate_button.clicked.connect(self.evaluate)
+        toggle = QPushButton("Activer / désactiver")
         toggle.clicked.connect(self.toggle)
-        layout.addWidget(toggle, alignment=Qt.AlignmentFlag.AlignLeft)
-        layout.addStretch(1)
+        buttons.addWidget(self.evaluate_button)
+        buttons.addWidget(toggle)
+        buttons.addStretch(1)
+        layout.addLayout(buttons)
+        note = QLabel("L'évaluation lit jusqu'à 300 transactions du wallet (1 à 3 minutes) et calcule : taux de "
+                      "réussite, gains et pertes réalisés, drawdown, régularité, comportements suspects.")
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        self.details = QTextBrowser()
+        self.details.setMinimumHeight(220)
+        self.details.setPlaceholderText("Sélectionne un trader pour voir le détail de son évaluation.")
+        layout.addWidget(self.details)
+        self.table.itemSelectionChanged.connect(self.show_details)
         self.refresh()
 
     def refresh(self) -> None:
         self._rows = self.db.list_traders()
+        def pct(value):
+            return "—" if value is None else f"{value:.0f} %"
+
         fill_table(self.table, [[t["address"], t["label"] or "", "actif" if t["active"] else "désactivé",
-                                 "—" if t["score"] is None else f"{t['score']:.0f}/100", t["added_at"]]
+                                 "—" if t["score"] is None else f"{t['score']:.0f}/100",
+                                 pct((t["stats"].get("win_rate") or 0) * 100 if t["stats"].get("win_rate") is not None
+                                     else None),
+                                 pct(t["stats"].get("max_drawdown_pct")), t["added_at"]]
                                 for t in self._rows], "Aucun trader : ajoute une adresse ci-dessus.")
 
     def add(self) -> None:
@@ -249,6 +342,61 @@ class TradersPage(QWidget):
         self.address.clear()
         self.label.clear()
         self.refresh()
+
+    def _selected(self):
+        row = self.table.currentRow()
+        rows = getattr(self, "_rows", [])
+        return rows[row] if 0 <= row < len(rows) else None
+
+    def show_details(self) -> None:
+        trader = self._selected()
+        if trader is None:
+            return
+        s = trader["stats"]
+        if not s:
+            self.details.setHtml("<p>Pas encore évalué : clique sur « Évaluer le trader sélectionné ».</p>")
+            return
+        notes = "".join(f"<li>{n}</li>" for n in s.get("notes", []))
+        pf = s.get("profit_factor")
+        self.details.setHtml(
+            f"<h3>Score {trader['score']:.0f}/100</h3>"
+            f"<p>Trades clôturés : <b>{s.get('closed_trades', 0)}</b> ({s.get('wins', 0)} gagnants, "
+            f"{s.get('losses', 0)} perdants) — réussite <b>{(s.get('win_rate') or 0) * 100:.0f} %</b><br>"
+            f"Gain réalisé : <b>{s.get('realized_pnl_sol', 0):+.3f} SOL</b> — facteur de profit "
+            f"{'—' if pf is None else f'{pf:.2f}'}<br>"
+            f"Gain moyen d'un trade gagnant : {s.get('avg_win_pct') or 0:.1f} % — perte moyenne : "
+            f"{s.get('avg_loss_pct') or 0:.1f} %<br>"
+            f"Drawdown max : {s.get('max_drawdown_sol', 0):.3f} SOL ({s.get('max_drawdown_pct') or 0:.0f} %)<br>"
+            f"Historique : {s.get('history_days', 0):.0f} jours, {s.get('active_days', 0)} jours actifs, "
+            f"semaines positives {(s.get('positive_weeks_ratio') or 0) * 100:.0f} %<br>"
+            f"Évalué le : {s.get('evaluated_at', '—')}</p>" + (f"<p>Points d'attention :</p><ul>{notes}</ul>"
+                                                               if notes else ""))
+
+    def evaluate(self) -> None:
+        trader = self._selected()
+        if trader is None:
+            QMessageBox.information(self, "Évaluer", "Sélectionne d'abord un trader dans le tableau.")
+            return
+        self.evaluate_button.setEnabled(False)
+        self.evaluate_button.setText("Évaluation en cours…")
+        from app import services
+        address = trader["address"]
+        self.runner.start(lambda _s: services.evaluate_trader(self.db, address), on_done=self._evaluated,
+                          on_error=self._evaluate_failed)
+
+    def _evaluated(self, report) -> None:
+        self.evaluate_button.setEnabled(True)
+        self.evaluate_button.setText("Évaluer le trader sélectionné (HEAD)")
+        self.refresh()
+        if report.status == "UNAVAILABLE":
+            QMessageBox.warning(self, "Évaluation impossible", report.summary)
+        else:
+            QMessageBox.information(self, "Évaluation terminée", report.summary)
+
+    def _evaluate_failed(self, message: str) -> None:
+        self.evaluate_button.setEnabled(True)
+        self.evaluate_button.setText("Évaluer le trader sélectionné (HEAD)")
+        QMessageBox.warning(self, "Évaluation impossible", message)
 
     def toggle(self) -> None:
         row = self.table.currentRow()
