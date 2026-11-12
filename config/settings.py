@@ -23,7 +23,7 @@ from core.paths import DEFAULTS_FILE
 if TYPE_CHECKING:
     from data.database import Database
 
-EDITABLE_SECTIONS = frozenset({"capital", "judge", "exit", "execution", "schedule"})
+EDITABLE_SECTIONS = frozenset({"capital", "judge", "exit", "execution", "schedule", "demo"})
 ALLOWED_ACTOR = "dashboard"
 VALID_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -128,10 +128,15 @@ def validate_settings(data: Mapping[str, Any]) -> list[str]:
         errors.append("exit.take_profit_pct doit être supérieur à 0.")
 
     exe = data.get("execution", {})
+    if exe.get("venue", "gmgn") not in ("gmgn", "jupiter"):
+        errors.append("execution.venue doit être « gmgn » ou « jupiter ».")
     if not 1 <= exe.get("slippage_bps", 0) <= 1000:
         errors.append("execution.slippage_bps doit être compris entre 1 et 1000 (10 %).")
     if exe.get("max_priority_fee_lamports", -1) < 0:
         errors.append("execution.max_priority_fee_lamports ne peut pas être négatif.")
+
+    if not 1 <= data.get("demo", {}).get("start_balance_eur", 50) <= 100_000:
+        errors.append("demo.start_balance_eur doit être compris entre 1 et 100 000 €.")
 
     sch = data.get("schedule", {})
     for key in ("start", "stop"):

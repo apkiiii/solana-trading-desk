@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Solana Trading Desk</title>
+<link rel="icon" href="/static/icon.png">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="shell">
+  <!-- ============================== barre latérale -->
+  <aside class="side">
+    <div class="brand"><img src="/static/icon.png" alt=""><div><b>SOLANA<br>TRADING DESK</b><small id="ver">v—</small></div></div>
+    <nav class="nav" id="nav">
+      <a href="#home" data-view="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>Accueil</a>
+      <a href="#agents" data-view="agents"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4.5-6 8-6s7 2 8 6"/></svg>Agents</a>
+      <a href="#judge" data-view="judge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18M5 7h14M7 7l-3 7h6zM17 7l-3 7h6z"/></svg>JUDGE</a>
+      <a href="#traders" data-view="traders"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg>Traders suivis</a>
+      <a href="#journal" data-view="journal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>Positions & journal</a>
+      <a href="#settings" data-view="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg>Réglages</a>
+      <a href="#connections" data-view="connections"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 007 0l3-3a5 5 0 00-7-7l-1 1"/><path d="M14 11a5 5 0 00-7 0l-3 3a5 5 0 007 7l1-1"/></svg>Connexions & test</a>
+      <a href="#vps" data-view="vps"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>VPS</a>
+      <a href="#updates" data-view="updates"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>Mises à jour<span class="dot" id="upd-dot" hidden></span></a>
+    </nav>
+    <div class="side-foot">
+      <div class="where"><i></i><span>Fonctionne sur <b>ce PC</b></span></div>
+      <div class="dim mono" id="data-root"></div>
+      <button class="btn ghost sm" id="btn-quit" title="Fermer le logiciel">Quitter</button>
+    </div>
+  </aside>
+
+  <!-- ============================== zone principale -->
+  <main class="main">
+    <header class="top">
+      <div class="seg" id="account-seg">
+        <button data-account="demo" class="demo"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="9"/><path d="M8 12h8"/></svg>Compte démo</button>
+        <button data-account="real" class="real"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg>Compte réel</button>
+      </div>
+      <span class="chip" id="chip-bot"><i></i>Bot arrêté</span>
+      <span class="chip" id="chip-schedule"><i></i>Horaires</span>
+      <span class="chip gold" id="chip-venue"><i></i>GMGN</span>
+      <span class="spacer"></span>
+      <button class="btn start" id="btn-start" disabled title="Le moteur automatique arrive avec la version 0.8">▶ Démarrer</button>
+      <button class="btn stop" id="btn-stop" disabled title="Le moteur automatique arrive avec la version 0.8">■ Stopper</button>
+      <button class="btn urgent" id="btn-urgent" title="Bloque immédiatement toute transaction">⚠ Arrêt d'urgence</button>
+    </header>
+
+    <div class="content">
+      <!-- ---------------- Accueil -->
+      <section class="view" id="view-home">
+        <div class="banner" id="home-banner"><b>Version —</b><span id="home-banner-text"></span></div>
+        <div class="hero">
+          <div class="panel capital">
+            <div class="label" id="cap-label">Solde du compte démo</div>
+            <div class="big mono" id="cap-big">—</div>
+            <div class="sub" id="cap-sub">—</div>
+            <div class="minis">
+              <div class="mini"><span>Investi</span><b class="mono" id="m-invested">—</b></div>
+              <div class="mini"><span>Résultat net</span><b class="mono" id="m-pnl">—</b></div>
+              <div class="mini"><span>Positions</span><b class="mono" id="m-pos">—</b></div>
+            </div>
+            <div style="margin-top:14px" class="row"><span class="muted" style="font-size:12px">Budget de trading utilisé</span><span class="spacer"></span><span class="mono muted" style="font-size:12px" id="m-budget-txt"></span></div>
+            <div class="bar" style="margin-top:6px"><i id="m-budget" style="width:0%"></i></div>
+          </div>
+          <div class="panel">
+            <div class="panel-h"><h2>Top 3 opportunités</h2><span class="muted" style="font-size:12px">tokens achetés par tes traders, notés par les agents — seul le JUDGE décide</span></div>
+            <div class="panel-b"><div class="opps" id="opps"></div></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-h"><h2>Les agents en direct</h2><span class="chip" id="live-chip"><i></i>en attente</span></div>
+          <div class="panel-b"><div class="decks" id="decks"></div></div>
+        </div>
+        <div class="grid g4" style="margin-top:16px">
+          <div class="panel panel-b"><div class="kpi">Achats approuvés</div><div style="font-size:24px;font-weight:800" class="mono" id="k-approved">0</div></div>
+          <div class="panel panel-b"><div class="kpi">Refus du JUDGE</div><div style="font-size:24px;font-weight:800" class="mono" id="k-rejected">0</div></div>
+          <div class="panel panel-b"><div class="kpi">Traders suivis</div><div style="font-size:24px;font-weight:800" class="mono" id="k-traders">0</div></div>
+          <div class="panel panel-b"><div class="kpi">Crédits Helius ce mois</div><div style="font-size:24px;font-weight:800" class="mono" id="k-credits">0</div></div>
+        </div>
+      </section>
+
+      <!-- ---------------- Agents -->
+      <section class="view" id="view-agents">
+        <div class="page-head"><div><h1>Agents</h1><p>Sept agents spécialisés. Aucun ne peut acheter : ils analysent, le JUDGE décide.</p></div></div>
+        <div class="decks" id="decks-full"></div>
+        <div class="panel" style="margin-top:16px">
+          <div class="panel-h"><h2>Analyser un token</h2><span class="muted" style="font-size:12px">RISK + WHALE, pour le montant maximal d'une position — aucun achat</span></div>
+          <div class="panel-b">
+            <div class="row"><input class="input mono" id="mint" placeholder="Adresse du token (mint)" style="flex:1;min-width:280px"><button class="btn gold" id="btn-analyze">Analyser</button></div>
+            <div id="analysis" style="margin-top:14px"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------------- JUDGE -->
+      <section class="view" id="view-judge">
+        <div class="page-head"><div><h1>JUDGE</h1><p>Le décideur final. 14 contrôles fixes, aucune IA. Chaque décision est enregistrée avec ses preuves ; un refus est définitif.</p></div></div>
+        <div id="decisions"></div>
+      </section>
+
+      <!-- ---------------- Traders -->
+      <section class="view" id="view-traders">
+        <div class="page-head"><div><h1>Traders suivis</h1><p>Colle l'adresse publique d'un wallet repéré sur GMGN ou FOMO. L'agent HEAD l'évalue sur son vrai historique ; le bot refusera de copier un trader mal noté.</p></div></div>
+        <div class="panel panel-b" style="margin-bottom:16px">
+          <div class="row"><input class="input mono" id="t-addr" placeholder="Adresse publique Solana" style="flex:2;min-width:280px"><input class="input" id="t-label" placeholder="Nom (facultatif)" style="flex:1;min-width:160px"><button class="btn gold" id="btn-add-trader">Ajouter</button></div>
+        </div>
+        <div class="panel"><div class="panel-b" id="traders"></div></div>
+      </section>
+
+      <!-- ---------------- Journal -->
+      <section class="view" id="view-journal">
+        <div class="page-head"><div><h1>Positions & journal</h1><p>Positions du compte actif et tous les achats/ventes détectés chez tes traders.</p></div></div>
+        <div class="panel" style="margin-bottom:16px"><div class="panel-h"><h2>Positions</h2></div><div class="panel-b" id="positions"></div></div>
+        <div class="panel"><div class="panel-h"><h2>Swaps détectés</h2></div><div class="panel-b" id="events"></div></div>
+      </section>
+
+      <!-- ---------------- Réglages -->
+      <section class="view" id="view-settings">
+        <div class="page-head"><div><h1>Réglages</h1><p>Choisis un profil : c'est tout ce qu'il faut. Les réglages détaillés restent disponibles plus bas, chacun expliqué simplement.</p></div></div>
+        <div class="panel" style="margin-bottom:16px"><div class="panel-h"><h2>1. Profil de risque</h2></div><div class="panel-b"><div class="profiles" id="profiles"></div></div></div>
+        <div class="grid g2" style="margin-bottom:16px">
+          <div class="panel"><div class="panel-h"><h2>2. Plateforme d'exécution</h2></div><div class="panel-b"><div class="profiles" style="grid-template-columns:1fr 1fr" id="venues"></div></div></div>
+          <div class="panel"><div class="panel-h"><h2>3. Compte démo</h2></div><div class="panel-b">
+            <p class="muted" style="margin-top:0">Argent fictif, marché réel : le bot fait exactement comme en réel, sans risquer un centime.</p>
+            <div class="setting"><div><b>Solde de départ</b><span>Montant fictif du compte démo</span></div><input class="input mono" type="number" min="1" step="1" data-s="demo.start_balance_eur"></div>
+          </div></div>
+        </div>
+        <div class="panel" style="margin-bottom:16px"><div class="panel-h"><h2>4. Horaires</h2></div><div class="panel-b">
+          <div class="setting"><div><b>Programmation</b><span>Hors horaires, aucun nouvel achat ; les positions restent surveillées</span></div><select data-s="schedule.enabled"><option value="true">Activée</option><option value="false">Désactivée</option></select></div>
+          <div class="setting"><div><b>Début des achats</b><span>Heure de Paris</span></div><input class="input mono" type="time" data-s="schedule.start"></div>
+          <div class="setting"><div><b>Fin des achats</b><span>Peut passer minuit (ex. 20:00 → 02:00)</span></div><input class="input mono" type="time" data-s="schedule.stop"></div>
+          <div class="setting"><div><b>Jours</b><span>Jours où le bot peut acheter</span></div><div class="days" id="days"></div></div>
+        </div></div>
+        <div class="panel"><div class="panel-h"><h2>5. Limites de sécurité</h2></div><div class="panel-b" id="limits"></div></div>
+      </section>
+
+      <!-- ---------------- Connexions -->
+      <section class="view" id="view-connections">
+        <div class="page-head"><div><h1>Connexions & test</h1><p>Les clés servent à lire le marché et à passer les ordres. Elles restent sur cet ordinateur et ne sont jamais affichées en entier. Ne colle jamais ici une clé privée ou une phrase de récupération.</p></div></div>
+        <div class="grid g2">
+          <div class="panel"><div class="panel-h"><h2>Clés API</h2></div><div class="panel-b" id="keys"></div></div>
+          <div class="panel"><div class="panel-h"><h2>Diagnostic</h2><button class="btn gold sm" id="btn-diag">Lancer le test</button></div><div class="panel-b">
+            <input class="input mono" id="diag-wallet" placeholder="Optionnel : adresse d'un trader à tester">
+            <div class="console" id="diag-out" style="margin-top:12px">Clique sur « Lancer le test » : connexions RPC, temps réel, prix, devis, liquidité, risque. Aucune transaction n'est envoyée.</div>
+          </div></div>
+        </div>
+      </section>
+
+      <!-- ---------------- VPS -->
+      <section class="view" id="view-vps">
+        <div class="page-head"><div><h1>VPS</h1><p>Faire tourner le bot 24 h/24 sur ton serveur, et le piloter d'ici avec exactement la même interface.</p></div></div>
+        <div class="grid g2">
+          <div class="panel"><div class="panel-h"><h2>Comment ça marchera</h2><span class="chip info"><i></i>version 0.8</span></div><div class="panel-b">
+            <ol style="margin:0;padding-left:18px;line-height:1.9">
+              <li>Tu indiques l'adresse du VPS et ta clé SSH (jamais de mot de passe ici).</li>
+              <li>Le logiciel installe le moteur sur le VPS et le démarre comme un service (redémarrage automatique).</li>
+              <li>Cette fenêtre se connecte au VPS par un tunnel chiffré : tout s'affiche comme maintenant.</li>
+              <li>Ton PC peut s'éteindre : le bot continue, les stop-loss restent surveillés.</li>
+            </ol>
+          </div></div>
+          <div class="panel"><div class="panel-h"><h2>À préparer</h2></div><div class="panel-b">
+            <ul style="margin:0;padding-left:18px;line-height:1.9">
+              <li>Système : Ubuntu 22.04/24.04 ou Debian 12 conseillé</li>
+              <li>1 vCPU et 1 à 2 Go de mémoire suffisent</li>
+              <li>Connexion par clé SSH (désactiver la connexion par mot de passe)</li>
+              <li>Localisation proche des serveurs Solana (Francfort, Amsterdam, États-Unis)</li>
+            </ul>
+          </div></div>
+        </div>
+      </section>
+
+      <!-- ---------------- Mises à jour -->
+      <section class="view" id="view-updates">
+        <div class="page-head"><div><h1>Mises à jour</h1><p>Les nouvelles versions arrivent ici automatiquement. Rien ne s'installe sans ton accord ; tes données sont conservées.</p></div></div>
+        <div class="panel panel-b">
+          <div class="row"><div><div class="muted">Version installée</div><div style="font-size:22px;font-weight:800" class="mono" id="u-current">—</div></div><span class="spacer"></span><button class="btn" id="btn-u-check">Vérifier maintenant</button><button class="btn gold" id="btn-u-install" disabled>Télécharger et installer</button></div>
+          <div id="u-status" class="muted" style="margin-top:10px"></div>
+          <div id="u-notes" class="md" style="margin-top:12px"></div>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<!-- ============================== assistant de démarrage -->
+<div class="overlay" id="wizard"><div class="panel wizard">
+  <div class="steps" id="wz-steps"><i></i><i></i><i></i><i></i></div>
+  <div id="wz-body"></div>
+  <div class="row" style="margin-top:22px"><button class="btn ghost" id="wz-skip">Plus tard</button><span class="spacer"></span><button class="btn" id="wz-prev">Retour</button><button class="btn gold" id="wz-next">Suivant</button></div>
+</div></div>
+<div class="toasts" id="toasts"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

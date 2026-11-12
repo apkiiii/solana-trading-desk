@@ -5,6 +5,6 @@ python-dotenv>=1.0        # lecture du fichier .env (clés API uniquement)
 tzdata>=2024.1            # fuseaux horaires (Windows n'en fournit pas à Python)
 solders>=0.21             # adresses, transactions et signatures Solana
 keyring>=25               # clé privée dans le Gestionnaire d'identifiants Windows (étape 7)
-PySide6>=6.7              # application de bureau Windows (étape 9)
+aiohttp>=3.9,<4          # serveur local de l'interface (et du VPS)
 pyinstaller>=6.6          # fabrication de SolanaTradingDesk.exe (étape 11)
 pytest>=8                 # tests automatiques

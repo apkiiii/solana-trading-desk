@@ -18,7 +18,7 @@ from core.logs import register_secret
 from core.paths import ENV_FILE
 
 _FORBIDDEN_MARKERS = ("PRIVATE", "SECRET_KEY", "SEED", "MNEMONIC", "KEYPAIR", "PHRASE")
-_KNOWN = ("HELIUS_API_KEY", "JUPITER_API_KEY", "RUGCHECK_API_KEY", "SOLANA_RPC_URL", "SOLANA_WS_URL")
+_KNOWN = ("HELIUS_API_KEY", "JUPITER_API_KEY", "RUGCHECK_API_KEY", "GMGN_API_KEY", "SOLANA_RPC_URL", "SOLANA_WS_URL")
 
 
 class SecretsError(RuntimeError):
@@ -37,6 +37,7 @@ class ApiSecrets:
     helius_api_key: str = field(default="", repr=False)
     jupiter_api_key: str = field(default="", repr=False)
     rugcheck_api_key: str = field(default="", repr=False)
+    gmgn_api_key: str = field(default="", repr=False)
     rpc_url_override: str = field(default="", repr=False)
     ws_url_override: str = field(default="", repr=False)
 
@@ -97,10 +98,11 @@ def load_secrets(env_path: Path | None = None, environ: dict[str, str] | None = 
         helius_api_key=values.get("HELIUS_API_KEY", "").strip(),
         jupiter_api_key=values.get("JUPITER_API_KEY", "").strip(),
         rugcheck_api_key=values.get("RUGCHECK_API_KEY", "").strip(),
+        gmgn_api_key=values.get("GMGN_API_KEY", "").strip(),
         rpc_url_override=values.get("SOLANA_RPC_URL", "").strip(),
         ws_url_override=values.get("SOLANA_WS_URL", "").strip(),
     )
-    for value in (secrets.helius_api_key, secrets.jupiter_api_key, secrets.rugcheck_api_key,
+    for value in (secrets.helius_api_key, secrets.jupiter_api_key, secrets.rugcheck_api_key, secrets.gmgn_api_key,
                   secrets.rpc_url_override, secrets.ws_url_override):
         register_secret(value)
     return secrets

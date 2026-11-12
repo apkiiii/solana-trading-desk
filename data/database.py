@@ -383,6 +383,41 @@ class Database:
             row["payload"] = json.loads(row.pop("payload_json") or "{}")
         return rows
 
+    # ------------------------------------------------------------- décisions
+    def get_decision(self, proposal_key: str) -> dict[str, Any] | None:
+        row = self.query_one("SELECT * FROM decisions WHERE proposal_key = ?", (proposal_key,))
+        if row:
+            row["reasons"] = json.loads(row.pop("reasons_json") or "[]")
+            row["evidence"] = json.loads(row.pop("evidence_json") or "{}")
+        return row
+
+    def record_decision(self, *, proposal_key: str, side: str, token_mint: str | None, source_signature: str | None,
+                        decision: str, reasons: list[str], evidence: dict[str, Any], mode: str) -> None:
+        """Enregistre une décision. Une décision finale (APPROVED/REJECTED) n'est jamais remplacée."""
+        now = _iso()
+        with self.transaction() as conn:
+            existing = conn.execute("SELECT decision FROM decisions WHERE proposal_key = ?",
+                                    (proposal_key,)).fetchone()
+            if existing and existing[0] in ("APPROVED", "REJECTED"):
+                raise DatabaseError(f"Décision finale déjà enregistrée pour {proposal_key}")
+            payload = (side, token_mint, source_signature, decision, json.dumps(reasons, ensure_ascii=False),
+                       json.dumps(evidence, ensure_ascii=False, default=str), mode, now)
+            if existing:
+                conn.execute("UPDATE decisions SET side=?, token_mint=?, source_signature=?, decision=?, "
+                             "reasons_json=?, evidence_json=?, mode=?, updated_at=? WHERE proposal_key=?",
+                             (*payload, proposal_key))
+            else:
+                conn.execute("INSERT INTO decisions (side, token_mint, source_signature, decision, reasons_json, "
+                             "evidence_json, mode, updated_at, created_at, proposal_key) "
+                             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (*payload, now, proposal_key))
+
+    def recent_decisions(self, limit: int = 50) -> list[dict[str, Any]]:
+        rows = self.query_all("SELECT * FROM decisions ORDER BY id DESC LIMIT ?", (limit,))
+        for row in rows:
+            row["reasons"] = json.loads(row.pop("reasons_json") or "[]")
+            row["evidence"] = json.loads(row.pop("evidence_json") or "{}")
+        return rows
+
     def open_positions(self) -> list[dict[str, Any]]:
         return self.query_all("SELECT * FROM positions WHERE status = 'OPEN' ORDER BY id")
 

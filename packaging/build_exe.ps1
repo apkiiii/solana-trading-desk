@@ -12,6 +12,7 @@ python -m PyInstaller --noconfirm --clean --windowed `
     --icon assets\icon.ico `
     --add-data "config\defaults.toml;config" `
     --add-data "assets;assets" `
+    --add-data "web;web" `
     --collect-submodules keyring `
     --collect-data tzdata `
     --exclude-module tests `
@@ -19,9 +20,7 @@ python -m PyInstaller --noconfirm --clean --windowed `
     --exclude-module numpy `
     --exclude-module PIL `
     --exclude-module tkinter `
-    --exclude-module PySide6.QtQml `
-    --exclude-module PySide6.QtQuick `
-    --exclude-module PySide6.QtPdf `
+    --exclude-module PySide6 `
     SolanaTradingDesk.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller a échoué" }
 

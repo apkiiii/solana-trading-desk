@@ -3,7 +3,7 @@
 Logiciel Windows personnel de copy trading sur Solana : 7 agents spécialisés et un JUDGE
 déterministe qui a le dernier mot sur chaque transaction.
 
-> **Version actuelle : 0.5 — les six agents.**
+> **Version actuelle : 0.6 — JUDGE et nouvelle interface.**
 > L'application s'installe, lit la blockchain, détecte les achats et ventes des traders suivis et
 > teste toutes les connexions. **Elle n'achète ni ne vend rien pour l'instant** : les agents, le
 > JUDGE et l'exécution arrivent par mises à jour, proposées directement dans l'application.
@@ -38,8 +38,8 @@ Ce dossier est conservé lors des mises à jour et de la désinstallation.
 |---|---|---|
 | 0.4 | Application, moteur de données, mises à jour automatiques | ✅ |
 | 0.5 | Agents SCOUT, RISK, WHALE, HEAD, SNIPER, EXIT | ✅ |
-| 0.6 | JUDGE (règles de sécurité déterministes) | à venir |
-| 0.7 | Copy trading + exécution (SIMULATION / PAPER / LIVE) | à venir |
+| 0.6 | JUDGE, nouvelle interface, comptes démo/réel, profils de risque, GMGN ou Jupiter | ✅ |
+| 0.7 | Exécution des ordres sur GMGN ou Jupiter (compte démo puis réel) | à venir |
 | 0.8 | Planificateur, DÉMARRER / STOPPER / ARRÊT D'URGENCE, moteur en arrière-plan | à venir |
 | 0.9 | Interface complète (réglages, historique détaillé) | à venir |
 | 1.0 | Batterie complète de tests obligatoires validée | à venir |
@@ -69,7 +69,8 @@ Publier une version : ajouter `packaging/release-notes/<version>.md` puis modifi
 (étiquette `v<version>` créée automatiquement). Relance possible depuis l'onglet Actions.
 
 ```
-app/        application de bureau (PySide6)
+app/        serveur local + lanceur (l'interface s'ouvre dans une fenêtre Edge/Chrome)
+web/        interface (HTML/CSS/JS)
 config/     defaults.toml + réglages en lecture seule pour les agents
 core/       chemins, journaux, version, mises à jour
 data/       base SQLite, fournisseurs (RPC, Jupiter, DexScreener, RugCheck), détection des swaps,

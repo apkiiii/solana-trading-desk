@@ -1,62 +1,93 @@
 """Point d'entrée de SolanaTradingDesk.exe.
 
-    SolanaTradingDesk.exe              -> ouvre l'application
+    SolanaTradingDesk.exe              -> démarre le serveur local et ouvre l'interface
     SolanaTradingDesk.exe --diagnose   -> diagnostic en ligne de commande
     SolanaTradingDesk.exe --version    -> affiche la version
-    SolanaTradingDesk.exe --engine     -> moteur en arrière-plan (disponible à l'étape 8)
+    SolanaTradingDesk.exe --no-window  -> serveur seul (ex. VPS, version 0.8)
 """
 from __future__ import annotations
 
 import argparse
+import asyncio
+import json
 import logging
+import os
+import shutil
+import subprocess
 import sys
+import urllib.request
+import webbrowser
+from pathlib import Path
+
+PORT = 8766
+URL = f"http://127.0.0.1:{PORT}/"
 
 
-def _run_gui() -> int:
-    from PySide6.QtCore import QLockFile
-    from PySide6.QtWidgets import QApplication, QMessageBox
+def _already_running() -> bool:
+    try:
+        with urllib.request.urlopen(f"{URL}api/ping", timeout=1.5) as response:  # noqa: S310 - adresse locale fixe
+            return json.loads(response.read()).get("app") == "SolanaTradingDesk"
+    except (OSError, ValueError):
+        return False
 
-    from app.theme import STYLESHEET
-    from app.window import MainWindow
+
+def _browser_candidates() -> list[str]:
+    candidates: list[str] = []
+    if sys.platform == "win32":
+        roots = [os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
+                 os.environ.get("PROGRAMFILES", r"C:\Program Files"), os.environ.get("LOCALAPPDATA", "")]
+        for root in filter(None, roots):
+            candidates += [str(Path(root) / "Microsoft/Edge/Application/msedge.exe"),
+                           str(Path(root) / "Google/Chrome/Application/chrome.exe")]
+    for name in ("msedge", "microsoft-edge", "google-chrome", "chromium", "chromium-browser", "chrome"):
+        found = shutil.which(name)
+        if found:
+            candidates.append(found)
+    return [c for c in candidates if Path(c).exists()]
+
+
+def open_window(profile_dir: Path) -> None:
+    """Ouvre l'interface dans une fenêtre d'application (sans barre d'adresse) si possible."""
+    for browser in _browser_candidates():
+        try:
+            subprocess.Popen([browser, f"--app={URL}", f"--user-data-dir={profile_dir}", "--window-size=1440,900",  # noqa: S603
+                              "--no-first-run", "--no-default-browser-check"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+        except OSError:
+            continue
+    webbrowser.open(URL)
+
+
+def _run_app(open_ui: bool) -> int:
+    from app.server import serve
     from core.logs import setup_logging
     from core.paths import DATA_ROOT, DB_PATH, ensure_dirs
     from core.version import __version__
     from data.database import Database
 
-    ensure_dirs()
-    log = setup_logging("app", console=False)
-    app = QApplication(sys.argv)
-    app.setApplicationName("SolanaTradingDesk")
-    app.setApplicationVersion(__version__)
-    app.setStyleSheet(STYLESHEET)
-
-    lock = QLockFile(str(DATA_ROOT / "app.lock"))
-    if not lock.tryLock(200):
-        QMessageBox.information(None, "Déjà ouvert", "MY SOLANA TRADING DESK est déjà ouvert.")
+    if _already_running():
+        if open_ui:
+            open_window(DATA_ROOT / "ui-profile")
         return 0
-
+    ensure_dirs()
+    log = setup_logging("app", console=not getattr(sys, "frozen", False))
+    log.info("Démarrage de Solana Trading Desk %s", __version__)
+    db = Database(DB_PATH)
     try:
-        db = Database(DB_PATH)
-    except Exception as exc:  # noqa: BLE001
-        log.exception("Ouverture de la base impossible")
-        QMessageBox.critical(None, "Erreur", f"Impossible d'ouvrir la base de données :\n{exc}")
-        return 1
-
-    log.info("Application démarrée (version %s)", __version__)
-    window = MainWindow(db)
-    window.show()
-    code = app.exec()
-    db.close()
-    lock.unlock()
-    log.info("Application fermée")
-    return code
+        asyncio.run(serve(db, port=PORT, idle_exit_seconds=180.0 if open_ui else None,
+                          on_ready=(lambda: open_window(DATA_ROOT / "ui-profile")) if open_ui else None))
+    finally:
+        db.close()
+        log.info("Arrêt de Solana Trading Desk")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="SolanaTradingDesk")
     parser.add_argument("--diagnose", action="store_true", help="diagnostic des connexions")
     parser.add_argument("--wallet", help="avec --diagnose : adresse d'un trader à tester")
-    parser.add_argument("--engine", action="store_true", help="moteur en arrière-plan")
+    parser.add_argument("--no-window", action="store_true", help="serveur seul, sans ouvrir de fenêtre")
     parser.add_argument("--version", action="store_true", help="affiche la version")
     args = parser.parse_args(argv)
 
@@ -65,8 +96,6 @@ def main(argv: list[str] | None = None) -> int:
         print(__version__)
         return 0
     if args.diagnose:
-        import asyncio
-
         from core.logs import setup_logging
         from core.paths import ensure_dirs
         from tools import diagnose
@@ -75,11 +104,8 @@ def main(argv: list[str] | None = None) -> int:
         ensure_dirs()
         setup_logging("diagnose", console=False)
         return asyncio.run(diagnose.run(args.wallet))
-    if args.engine:
-        logging.basicConfig(level=logging.INFO)
-        logging.getLogger("engine").warning("Le moteur de trading arrive dans une prochaine version.")
-        return 0
-    return _run_gui()
+    logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+    return _run_app(open_ui=not args.no_window)
 
 
 if __name__ == "__main__":
