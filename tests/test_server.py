@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
@@ -9,6 +10,7 @@ from aiohttp.test_utils import TestClient, TestServer
 import app.server as server_module
 import security.secrets as secrets_module
 from app.server import DeskServer
+from security.trading_wallet import TradingWalletStore
 from tests.conftest import WALLET
 
 
@@ -21,9 +23,11 @@ def isolated(tmp_path, monkeypatch):
     return tmp_path
 
 
-def run_with_client(db, scenario, keys=None):
+def run_with_client(db, scenario, keys=None, **kwargs):
     async def go():
-        desk = DeskServer(db, check_updates=False, gmgn_keys=keys)
+        if "wallet" not in kwargs:
+            kwargs["wallet"] = TradingWalletStore(Path(db.path).parent / "wallet", use_keyring=False)
+        desk = DeskServer(db, check_updates=False, gmgn_keys=keys, **kwargs)
         async with TestClient(TestServer(desk.app)) as client:
             return await scenario(client, desk)
     return asyncio.run(go())
@@ -36,9 +40,10 @@ def test_index_state_and_first_run(db, isolated):
         css = await client.get("/static/app.css")
         assert css.status == 200
         state = await (await client.get("/api/state")).json()
-        assert state["account"] == "demo" and state["first_run"] is True and state["venue"] == "gmgn"
+        assert state["account"] == "demo" and state["first_run"] is True and state["venue"] == "jupiter"
         assert state["profile"] == "equilibre" and state["capital"]["demo_balance"] == 50.0
-        assert state["engine_available"] is False
+        assert state["engine_available"] is True and state["engine_running"] is False
+        assert state["wallet"] is None and state["live_armed"] is False
     run_with_client(db, scenario)
 
 
@@ -124,3 +129,102 @@ def test_gmgn_signing_key_flow(db, isolated):
         shown = await (await client.get("/api/gmgn/key")).json()
         assert shown["public_pem"] == created["public_pem"]
     run_with_client(db, scenario, keys=store)
+
+
+# ----------------------------------------------------------- moteur, wallet, compte réel
+class FakeEngine:
+    def __init__(self):
+        self.live_armed = False
+        self.ran = asyncio.Event()
+
+    async def run(self, stop):
+        self.ran.set()
+        await stop.wait()
+
+    def status(self):
+        return {"live_armed": self.live_armed}
+
+
+class FakeProviders:
+    class rpc:  # noqa: N801
+        @staticmethod
+        async def get_balance(address):
+            return 250_000_000
+
+    async def aclose(self):
+        pass
+
+
+def test_start_stop_wallet_and_real_account(db, isolated):
+    from solders.keypair import Keypair
+
+    from tests.test_trading_wallet import b58encode
+
+    engines = []
+
+    def engine_factory(_providers):
+        engines.append(FakeEngine())
+        return engines[-1]
+
+    async def scenario(client, desk):
+        # sans trader : DÉMARRER refusé avec une explication
+        r = await client.post("/api/bot", json={"action": "start"})
+        assert r.status == 409 and "trader" in (await r.json())["error"]
+        await client.post("/api/traders", json={"address": WALLET})
+        r = await client.post("/api/bot", json={"action": "start"})
+        assert r.status == 200
+        await asyncio.wait_for(engines[0].ran.wait(), 1)
+        state = await (await client.get("/api/state")).json()
+        assert state["bot_state"] == "RUNNING" and state["engine_running"] and state["mode"] == "PAPER"
+        assert desk.keeps_running()                         # fenêtre fermée : le bot continue
+        # compte réel : impossible sans wallet dédié, puis sans confirmation
+        r = await client.post("/api/account", json={"account": "real", "confirm": True})
+        assert r.status == 409 and "Phantom" in (await r.json())["error"]
+        phrase = await client.post("/api/wallet", json={"private_key": " ".join(["word"] * 12)})
+        assert phrase.status == 400 and "phrase de récupération" in (await phrase.json())["error"]
+        kp = Keypair()
+        imported = await (await client.post("/api/wallet", json={"private_key": b58encode(bytes(kp))})).json()
+        assert imported["address"] == str(kp.pubkey())
+        info = await (await client.get("/api/wallet")).json()
+        assert info["address"] == str(kp.pubkey()) and info["balance"] == {"sol": 0.25}
+        assert b58encode(bytes(kp)) not in str(info)          # la clé n'est jamais renvoyée
+        r = await client.post("/api/account", json={"account": "real"})
+        assert r.status == 409
+        r = await client.post("/api/account", json={"account": "real", "confirm": True})
+        assert r.status == 200 and engines[0].live_armed is True
+        assert (await (await client.get("/api/state")).json())["mode"] == "LIVE"
+        # ARRÊT D'URGENCE : tout s'arrête et le compte réel est désarmé
+        await client.post("/api/emergency", json={"active": True})
+        state = await (await client.get("/api/state")).json()
+        assert state["bot_state"] == "STOPPED" and state["live_armed"] is False and engines[0].live_armed is False
+        r = await client.post("/api/bot", json={"action": "start"})
+        assert r.status == 409
+        await client.post("/api/emergency", json={"active": False})
+        await client.post("/api/account", json={"account": "demo"})
+        # STOPPER sans position ouverte : le moteur s'arrête
+        await client.post("/api/bot", json={"action": "start"})
+        await client.post("/api/bot", json={"action": "stop"})
+        assert not desk.engine_running and not desk.keeps_running()
+
+    run_with_client(db, scenario, providers_factory=lambda: FakeProviders(), engine_factory=engine_factory)
+
+
+def test_restart_never_resumes_trading_or_real_account(db, isolated):
+    db.set_control(actor="dashboard", bot_state="RUNNING", manual_stop=False, mode="LIVE")
+
+    async def scenario(client, desk):
+        state = await (await client.get("/api/state")).json()
+        assert state["bot_state"] == "STOPPED" and state["manual_stop"] is True
+        assert state["mode"] == "PAPER" and state["live_armed"] is False
+
+    run_with_client(db, scenario)
+
+
+def test_start_without_helius_key_explains_what_to_do(db, isolated):
+    async def scenario(client, _desk):
+        await client.post("/api/traders", json={"address": WALLET})
+        r = await client.post("/api/bot", json={"action": "start"})
+        assert r.status == 409 and "Helius" in (await r.json())["error"]
+        assert (await (await client.get("/api/state")).json())["bot_state"] == "STOPPED"
+
+    run_with_client(db, scenario)

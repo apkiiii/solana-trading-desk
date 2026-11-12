@@ -418,8 +418,66 @@ class Database:
             row["evidence"] = json.loads(row.pop("evidence_json") or "{}")
         return rows
 
-    def open_positions(self) -> list[dict[str, Any]]:
-        return self.query_all("SELECT * FROM positions WHERE status = 'OPEN' ORDER BY id")
+    def open_positions(self, mode: str | None = None) -> list[dict[str, Any]]:
+        if mode is None:
+            return self.query_all("SELECT * FROM positions WHERE status = 'OPEN' ORDER BY id")
+        return self.query_all("SELECT * FROM positions WHERE status = 'OPEN' AND mode = ? ORDER BY id", (mode,))
+
+    def open_position(self, *, token_mint: str, mode: str, source_wallet: str | None, source_signature: str | None,
+                      amount_raw: int, decimals: int | None, entry_price_usd: float | None, cost_eur: float,
+                      fees_eur: float, exit_strategy: dict[str, Any] | None = None,
+                      opened_at: datetime | None = None) -> int:
+        cursor = self.execute(
+            "INSERT INTO positions (token_mint, status, mode, source_wallet, source_signature, opened_at, amount_raw, "
+            "decimals, entry_price_usd, cost_eur, fees_eur, exit_strategy_json) "
+            "VALUES (?, 'OPEN', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (token_mint, mode, source_wallet, source_signature, _iso(opened_at), str(amount_raw), decimals,
+             entry_price_usd, round(cost_eur, 6), round(fees_eur, 6), json.dumps(exit_strategy or {})))
+        return int(cursor.lastrowid)
+
+    def close_position(self, position_id: int, *, proceeds_eur: float, fees_eur: float,
+                       closed_at: datetime | None = None) -> dict[str, Any]:
+        with self.transaction() as conn:
+            row = conn.execute("SELECT * FROM positions WHERE id = ?", (position_id,)).fetchone()
+            if row is None or row["status"] != "OPEN":
+                raise DatabaseError("Position introuvable ou déjà clôturée.")
+            total_fees = float(row["fees_eur"] or 0) + fees_eur
+            pnl = proceeds_eur - float(row["cost_eur"] or 0)
+            conn.execute("UPDATE positions SET status = 'CLOSED', closed_at = ?, proceeds_eur = ?, fees_eur = ?, "
+                         "realized_pnl_eur = ? WHERE id = ?",
+                         (_iso(closed_at), round(proceeds_eur, 6), round(total_fees, 6), round(pnl, 6), position_id))
+        result = self.query_one("SELECT * FROM positions WHERE id = ?", (position_id,))
+        assert result is not None
+        return result
+
+    def add_execution(self, *, side: str, mode: str, status: str, position_id: int | None = None,
+                      decision_key: str | None = None, request_id: str | None = None,
+                      tx_signature: str | None = None, in_mint: str | None = None, out_mint: str | None = None,
+                      in_amount_raw: int | None = None, out_amount_raw: int | None = None,
+                      fee_lamports: int | None = None, error: str | None = None) -> int:
+        decision = self.get_decision(decision_key) if decision_key else None
+        confirmed = _iso() if status == "CONFIRMED" else None
+        cursor = self.execute(
+            "INSERT INTO executions (position_id, decision_id, side, mode, request_id, tx_signature, status, in_mint, "
+            "out_mint, in_amount_raw, out_amount_raw, fee_lamports, error, created_at, confirmed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (position_id, decision["id"] if decision else None, side, mode, request_id, tx_signature, status,
+             in_mint, out_mint, None if in_amount_raw is None else str(in_amount_raw),
+             None if out_amount_raw is None else str(out_amount_raw), fee_lamports, error, _iso(), confirmed))
+        return int(cursor.lastrowid)
+
+    def link_execution(self, execution_id: int, position_id: int) -> None:
+        self.execute("UPDATE executions SET position_id = ? WHERE id = ?", (position_id, execution_id))
+
+    def realized_since(self, mode: str, since: datetime) -> float:
+        row = self.query_one("SELECT COALESCE(SUM(realized_pnl_eur), 0) AS p FROM positions "
+                             "WHERE mode = ? AND status = 'CLOSED' AND closed_at >= ?", (mode, _iso(since)))
+        return float(row["p"]) if row else 0.0
+
+    def last_signatures(self) -> dict[str, str]:
+        rows = self.query_all("SELECT wallet, signature FROM source_events s WHERE block_time = "
+                              "(SELECT MAX(block_time) FROM source_events WHERE wallet = s.wallet)")
+        return {r["wallet"]: r["signature"] for r in rows}
 
     # ---------------------------------------------------------- consommation API
     def add_api_usage(self, provider: str, *, requests: int = 1, credits: int = 0, errors: int = 0) -> None:

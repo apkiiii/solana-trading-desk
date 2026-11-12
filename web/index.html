@@ -39,10 +39,10 @@
       </div>
       <span class="chip" id="chip-bot"><i></i>Bot arrêté</span>
       <span class="chip" id="chip-schedule"><i></i>Horaires</span>
-      <span class="chip gold" id="chip-venue"><i></i>GMGN</span>
+      <span class="chip gold" id="chip-venue"><i></i>Jupiter</span>
       <span class="spacer"></span>
-      <button class="btn start" id="btn-start" disabled title="Le moteur automatique arrive avec la version 0.8">▶ Démarrer</button>
-      <button class="btn stop" id="btn-stop" disabled title="Le moteur automatique arrive avec la version 0.8">■ Stopper</button>
+      <button class="btn start" id="btn-start" title="Le bot commence à copier tes traders (achats soumis au JUDGE)">▶ Démarrer</button>
+      <button class="btn stop" id="btn-stop" title="Plus aucun nouvel achat ; les positions ouvertes restent protégées">■ Stopper</button>
       <button class="btn urgent" id="btn-urgent" title="Bloque immédiatement toute transaction">⚠ Arrêt d'urgence</button>
     </header>
 
@@ -71,6 +71,10 @@
         <div class="panel">
           <div class="panel-h"><h2>Les agents en direct</h2><span class="chip" id="live-chip"><i></i>en attente</span></div>
           <div class="panel-b"><div class="decks" id="decks"></div></div>
+        </div>
+        <div class="panel" style="margin-top:16px">
+          <div class="panel-h"><h2>Activité du bot</h2><span class="muted" style="font-size:12px">achats, ventes et messages importants</span></div>
+          <div class="panel-b" id="activity"></div>
         </div>
         <div class="grid g4" style="margin-top:16px">
           <div class="panel panel-b"><div class="kpi">Achats approuvés</div><div style="font-size:24px;font-weight:800" class="mono" id="k-approved">0</div></div>
@@ -120,7 +124,10 @@
         <div class="page-head"><div><h1>Réglages</h1><p>Choisis un profil : c'est tout ce qu'il faut. Les réglages détaillés restent disponibles plus bas, chacun expliqué simplement.</p></div></div>
         <div class="panel" style="margin-bottom:16px"><div class="panel-h"><h2>1. Profil de risque</h2></div><div class="panel-b"><div class="profiles" id="profiles"></div></div></div>
         <div class="grid g2" style="margin-bottom:16px">
-          <div class="panel"><div class="panel-h"><h2>2. Plateforme d'exécution</h2></div><div class="panel-b"><div class="profiles" style="grid-template-columns:1fr 1fr" id="venues"></div></div></div>
+          <div class="panel"><div class="panel-h"><h2>2. Exécution des ordres</h2></div><div class="panel-b">
+            <p style="margin-top:0"><b>Jupiter</b>, l'agrégateur de référence sur Solana : meilleur prix parmi toutes les plateformes, frais lus dans chaque devis.</p>
+            <p class="muted" style="margin-bottom:0"><b>Compte démo :</b> chaque ordre est chiffré avec un vrai devis Jupiter, sans rien envoyer.<br><b>Compte réel :</b> les ordres sont signés sur ce PC par le compte Phantom dédié au bot et apparaissent dans Phantom.</p>
+          </div></div>
           <div class="panel"><div class="panel-h"><h2>3. Compte démo</h2></div><div class="panel-b">
             <p class="muted" style="margin-top:0">Argent fictif, marché réel : le bot fait exactement comme en réel, sans risquer un centime.</p>
             <div class="setting"><div><b>Solde de départ</b><span>Montant fictif du compte démo</span></div><input class="input mono" type="number" min="1" step="1" data-s="demo.start_balance_eur"></div>
@@ -137,10 +144,10 @@
 
       <!-- ---------------- Connexions -->
       <section class="view" id="view-connections">
-        <div class="page-head"><div><h1>Connexions & test</h1><p>Les clés servent à lire le marché et à passer les ordres. Elles restent sur cet ordinateur et ne sont jamais affichées en entier. Ne colle jamais ici une clé privée ou une phrase de récupération.</p></div></div>
+        <div class="page-head"><div><h1>Connexions & test</h1><p>Tout reste sur cet ordinateur : rien n'est affiché en entier, rien n'est envoyé ailleurs. Ne donne jamais ta phrase de récupération, ni ici ni à personne.</p></div></div>
         <div class="grid g2">
           <div style="display:flex;flex-direction:column;gap:16px">
-          <div class="panel"><div class="panel-h"><h2>Clé de signature GMGN</h2><span class="chip" id="gk-chip"><i></i>—</span></div><div class="panel-b" id="gmgn-key"></div></div>
+          <div class="panel"><div class="panel-h"><h2>Wallet du bot (compte Phantom dédié)</h2><span class="chip" id="w-chip"><i></i>—</span></div><div class="panel-b" id="wallet"></div></div>
           <div class="panel"><div class="panel-h"><h2>Clés API</h2></div><div class="panel-b" id="keys"></div></div>
           </div>
           <div class="panel"><div class="panel-h"><h2>Diagnostic</h2><button class="btn gold sm" id="btn-diag">Lancer le test</button></div><div class="panel-b">

@@ -1,6 +1,6 @@
 """Jupiter : prix (Price API V3) et devis de swap (Swap API V2 /order).
 
-L'envoi des transactions (/execute) sera ajouté à l'étape 7, avec la signature.
+Envoi des transactions signées : /swap/v2/execute.
 Documentation : https://developers.jup.ag/docs/swap
 """
 from __future__ import annotations
@@ -107,3 +107,14 @@ class JupiterClient(HttpProvider):
         if not isinstance(data, dict):
             raise ProviderError(self.name, "réponse de devis inattendue")
         return parse_order(data)
+
+    async def execute(self, signed_transaction_b64: str, request_id: str) -> dict[str, Any]:
+        """Envoie une transaction signée (issue de /order). Renvoyer la même transaction est sans risque :
+        Jupiter ne l'exécute jamais deux fois (même signature)."""
+        data = await self._request("POST", "/swap/v2/execute",
+                                   json={"signedTransaction": signed_transaction_b64, "requestId": request_id})
+        if not isinstance(data, dict):
+            raise ProviderError(self.name, "réponse d'exécution inattendue")
+        return {"status": data.get("status"), "signature": data.get("signature"), "code": _int(data.get("code")),
+                "input_amount": _int(data.get("inputAmountResult")),
+                "output_amount": _int(data.get("outputAmountResult")), "error": data.get("error")}

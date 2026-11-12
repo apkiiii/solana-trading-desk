@@ -24,8 +24,11 @@ from core.validation import is_valid_address
 from core.version import RELEASE_NAME, __version__
 from data.database import Database, DatabaseError
 from engine.scheduler import entries_window_open, next_change
+from data.providers.factory import build_providers
+from engine.copy_trading import CopyTradingEngine
 from security.gmgn_keys import GmgnKeyError, GmgnKeyStore
 from security.secrets import SecretsError, load_secrets, mask, save_api_keys
+from security.trading_wallet import TradingWalletError, TradingWalletStore
 
 log = logging.getLogger(__name__)
 WEB_DIR = BUNDLE_DIR / "web"
@@ -42,9 +45,19 @@ def _error(message: str, status: int = 400) -> web.Response:
 
 
 class DeskServer:
-    def __init__(self, db: Database, *, check_updates: bool = True, gmgn_keys: GmgnKeyStore | None = None):
+    def __init__(self, db: Database, *, check_updates: bool = True, gmgn_keys: GmgnKeyStore | None = None,
+                 wallet: TradingWalletStore | None = None, providers_factory=None, engine_factory=None):
         self.db = db
         self.gmgn_keys = gmgn_keys or GmgnKeyStore()
+        self.wallet = wallet or TradingWalletStore()
+        self.providers_factory = providers_factory or (lambda: build_providers(load_settings(db), load_secrets(), db))
+        self.engine_factory = engine_factory or (lambda providers: CopyTradingEngine(db, providers,
+                                                                                     wallet_store=self.wallet))
+        self.engine: CopyTradingEngine | None = None
+        self.engine_task: asyncio.Task | None = None
+        self.engine_stop: asyncio.Event | None = None
+        self.engine_providers = None
+        self.live_armed = False  # armement du compte réel : mémoire de cette session uniquement
         self.check_updates = check_updates
         self.last_seen = time.monotonic()
         self.update_info: updater.UpdateInfo | None = None
@@ -62,7 +75,8 @@ class DeskServer:
             response = await handler(request)
         except web.HTTPException:
             raise
-        except (SettingsError, SecretsError, DatabaseError, GmgnKeyError, ValueError, PermissionError) as exc:
+        except (SettingsError, SecretsError, DatabaseError, GmgnKeyError, TradingWalletError, ValueError,
+                PermissionError) as exc:
             return _error(str(exc), 400)
         except Exception as exc:  # noqa: BLE001
             log.exception("Erreur API %s", request.path)
@@ -91,6 +105,10 @@ class DeskServer:
         r.add_post("/api/profile", self.profile)
         r.add_post("/api/account", self.account)
         r.add_post("/api/emergency", self.emergency)
+        r.add_post("/api/bot", self.bot)
+        r.add_get("/api/wallet", self.wallet_info)
+        r.add_post("/api/wallet", self.wallet_import)
+        r.add_post("/api/wallet/delete", self.wallet_delete)
         r.add_get("/api/keys", self.keys)
         r.add_post("/api/keys", self.save_keys)
         r.add_post("/api/diagnose", self.diagnose)
@@ -105,8 +123,72 @@ class DeskServer:
         self.app.on_startup.append(self._on_startup)
 
     async def _on_startup(self, _app: web.Application) -> None:
+        self.recover_after_restart()
         if self.check_updates:
             asyncio.get_running_loop().create_task(self._update_loop())
+        self.app.on_cleanup.append(self._on_cleanup)
+
+    async def _on_cleanup(self, _app: web.Application) -> None:
+        await self.stop_engine()
+
+    # ------------------------------------------------------------------ moteur
+    def recover_after_restart(self) -> None:
+        """Au lancement : jamais de reprise automatique du trading (et encore moins du compte réel)."""
+        control = self.db.get_control()
+        changes: dict[str, Any] = {}
+        if control["bot_state"] == "RUNNING" or not control["manual_stop"]:
+            changes.update(bot_state="STOPPED", manual_stop=True)
+            self.db.add_alert("info", "Logiciel redémarré : le bot est à l'arrêt. Appuie sur DÉMARRER pour reprendre.")
+        if control["mode"] == "LIVE":
+            changes["mode"] = "PAPER"
+            self.db.add_alert("warning", "Logiciel redémarré : retour au compte démo. Le compte réel doit être "
+                                         "réactivé à la main.")
+        if changes:
+            self.db.set_control(actor="system", **changes)
+
+    @property
+    def engine_running(self) -> bool:
+        return self.engine_task is not None and not self.engine_task.done()
+
+    async def start_engine(self) -> None:
+        if self.engine_running:
+            return
+        providers = self.providers_factory()  # SecretsError si la clé Helius manque
+        self.engine_providers = providers
+        self.engine = self.engine_factory(providers)
+        self.engine.live_armed = self.live_armed
+        self.engine_stop = asyncio.Event()
+        self.engine_task = asyncio.get_running_loop().create_task(self._engine_main(self.engine, self.engine_stop))
+
+    async def _engine_main(self, engine: CopyTradingEngine, stop: asyncio.Event) -> None:
+        try:
+            await engine.run(stop)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Arrêt du moteur sur erreur")
+            self.db.add_alert("error", f"Le moteur s'est arrêté sur une erreur : {type(exc).__name__}")
+        finally:
+            providers, self.engine_providers = self.engine_providers, None
+            if providers is not None and hasattr(providers, "aclose"):
+                try:
+                    await providers.aclose()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    async def stop_engine(self) -> None:
+        if self.engine_stop is not None:
+            self.engine_stop.set()
+        if self.engine_task is not None:
+            try:
+                await asyncio.wait_for(self.engine_task, timeout=10)
+            except (TimeoutError, asyncio.CancelledError):
+                self.engine_task.cancel()
+        self.engine_task = None
+
+    def keeps_running(self) -> bool:
+        """Le logiciel reste actif en arrière-plan (fenêtre fermée) tant que le moteur travaille."""
+        if not self.engine_running:
+            return False
+        return self.db.get_control()["bot_state"] == "RUNNING" or bool(self.db.open_positions())
 
     async def _update_loop(self) -> None:
         await asyncio.sleep(3)
@@ -162,7 +244,9 @@ class DeskServer:
             "account": "demo" if demo_mode else "real", "mode": control["mode"],
             "bot_state": control["bot_state"], "manual_stop": control["manual_stop"],
             "emergency": control["emergency_stop"] or EMERGENCY_STOP_FILE.exists(),
-            "engine_available": False,
+            "engine_available": True, "engine_running": self.engine_running,
+            "engine": self.engine.status() if self.engine is not None and self.engine_running else None,
+            "live_armed": self.live_armed, "wallet": self.wallet.address(),
             "schedule": {"enabled": schedule["enabled"], "open": entries_window_open(schedule, now),
                          "start": schedule["start"], "stop": schedule["stop"],
                          "next_change": change.isoformat() if change else None},
@@ -183,6 +267,7 @@ class DeskServer:
                      "gmgn": bool(secrets and secrets.gmgn_api_key)},
             "update": {"available": self.update_info.version if self.update_info else None},
             "first_run": not traders and not (secrets and secrets.helius_api_key),
+            "alerts": self.db.list_alerts(False, 8),
         }
 
     async def state(self, _request: web.Request) -> web.Response:
@@ -309,18 +394,107 @@ class DeskServer:
         return await self.settings(request)
 
     async def account(self, request: web.Request) -> web.Response:
-        account = str((await request.json()).get("account"))
+        body = await request.json()
+        account = str(body.get("account"))
         if account == "demo":
+            self.live_armed = False
+            if self.engine is not None:
+                self.engine.live_armed = False
             self.db.set_control(actor="dashboard", mode="PAPER")
             return _json({"ok": True, "account": "demo"})
-        if account == "real":
-            return _error("Le compte réel s'activera avec l'exécution des ordres (version 0.7), après vérification "
-                          "du wallet, des limites et une confirmation de ta part.", 409)
-        return _error("Compte inconnu.")
+        if account != "real":
+            return _error("Compte inconnu.")
+        if not self.wallet.exists():
+            return _error("Ajoute d'abord le compte Phantom dédié au bot (menu Connexions).", 409)
+        if body.get("confirm") is not True:
+            return _error("Confirmation explicite requise pour activer le compte réel.", 409)
+        if self.db.get_control()["emergency_stop"] or EMERGENCY_STOP_FILE.exists():
+            return _error("ARRÊT D'URGENCE actif : lève-le avant d'activer le compte réel.", 409)
+        await self.start_engine()
+        assert self.engine is not None
+        balance = await self._wallet_balance()
+        self.live_armed = True
+        self.engine.live_armed = True
+        self.db.set_control(actor="dashboard", mode="LIVE")
+        self.db.add_alert("warning", "Compte RÉEL activé pour cette session (jusqu'à la fermeture du logiciel).")
+        return _json({"ok": True, "account": "real", "wallet": self.wallet.address(), "balance": balance})
+
+    async def bot(self, request: web.Request) -> web.Response:
+        action = str((await request.json()).get("action"))
+        if action == "start":
+            control = self.db.get_control()
+            if control["emergency_stop"] or EMERGENCY_STOP_FILE.exists():
+                return _error("ARRÊT D'URGENCE actif : lève-le d'abord.", 409)
+            if not self.db.list_traders(active_only=True):
+                return _error("Ajoute au moins un trader à copier (menu Traders).", 409)
+            try:
+                await self.start_engine()
+            except SecretsError:
+                return _error("Clé Helius manquante : ajoute-la dans Connexions (gratuite sur helius.dev).", 409)
+            if control["mode"] == "SIMULATION":
+                self.db.set_control(actor="dashboard", mode="PAPER")
+            self.db.set_control(actor="dashboard", bot_state="RUNNING", manual_stop=False)
+            return _json({"ok": True, "bot_state": "RUNNING"})
+        if action == "stop":
+            # STOPPER : plus aucun nouvel achat ; EXIT continue de surveiller les positions ouvertes.
+            self.db.set_control(actor="dashboard", bot_state="STOPPED", manual_stop=True)
+            if not self.db.open_positions():
+                await self.stop_engine()
+            return _json({"ok": True, "bot_state": "STOPPED"})
+        return _error("Action inconnue.")
+
+    # ---------------------------------------------------------------- wallet
+    async def _wallet_balance(self) -> dict[str, Any] | None:
+        address = self.wallet.address()
+        if address is None:
+            return None
+        providers = self.engine_providers
+        temporary = None
+        try:
+            if providers is None:
+                providers = temporary = self.providers_factory()
+            lamports = await providers.rpc.get_balance(address)
+            return {"sol": lamports / 1e9}
+        except Exception:  # noqa: BLE001
+            return None
+        finally:
+            if temporary is not None and hasattr(temporary, "aclose"):
+                await temporary.aclose()
+
+    async def wallet_info(self, _request: web.Request) -> web.Response:
+        address = self.wallet.address()
+        return _json({"exists": address is not None, "address": address,
+                      "balance": await self._wallet_balance() if address else None})
+
+    async def wallet_import(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        if self.db.open_positions("LIVE"):
+            return _error("Des positions réelles sont ouvertes : impossible de changer de wallet maintenant.", 409)
+        result = self.wallet.import_key(str(body.get("private_key", "")))
+        self.db.add_alert("info", f"Wallet du bot enregistré : {result['address'][:4]}…{result['address'][-4:]}")
+        return _json({"ok": True, **result})
+
+    async def wallet_delete(self, _request: web.Request) -> web.Response:
+        if self.db.open_positions("LIVE"):
+            return _error("Des positions réelles sont ouvertes : vends-les avant de retirer le wallet.", 409)
+        self.wallet.delete()
+        self.live_armed = False
+        if self.engine is not None:
+            self.engine.live_armed = False
+        if self.db.get_control()["mode"] == "LIVE":
+            self.db.set_control(actor="dashboard", mode="PAPER")
+        return _json({"ok": True})
 
     async def emergency(self, request: web.Request) -> web.Response:
         active = bool((await request.json()).get("active"))
-        self.db.set_control(actor="dashboard", emergency_stop=active)
+        if active:
+            # Tout s'arrête : plus d'achat, plus de vente, compte réel désarmé.
+            self.db.set_control(actor="dashboard", emergency_stop=True, bot_state="STOPPED", manual_stop=True)
+            self.live_armed = False
+            if self.engine is not None:
+                self.engine.live_armed = False
+        else:
+            self.db.set_control(actor="dashboard", emergency_stop=False)
         if active:
             EMERGENCY_STOP_FILE.parent.mkdir(parents=True, exist_ok=True)
             EMERGENCY_STOP_FILE.write_text(datetime.now(UTC).isoformat(), encoding="utf-8")
@@ -403,8 +577,11 @@ async def serve(db: Database, host: str = "127.0.0.1", port: int = 8766, *, chec
                 await asyncio.wait_for(desk.quit_event.wait(), timeout=5)
             except TimeoutError:
                 pass
+            if desk.keeps_running():
+                continue  # bot actif ou positions ouvertes : on continue en arrière-plan
             if idle_exit_seconds and time.monotonic() - desk.last_seen > idle_exit_seconds:
                 log.info("Interface fermée depuis %.0f s : arrêt.", idle_exit_seconds)
                 break
     finally:
+        await desk.stop_engine()
         await runner.cleanup()

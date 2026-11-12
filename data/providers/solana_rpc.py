@@ -142,3 +142,14 @@ class SolanaRpcClient(HttpProvider):
     async def get_token_largest_accounts(self, mint: str) -> list[tuple[str, int]]:
         result = await self.call("getTokenLargestAccounts", [mint, {"commitment": "confirmed"}])
         return [(item["address"], int(item["amount"])) for item in (result or {}).get("value", [])]
+
+    async def get_token_balance(self, owner: str, mint: str) -> int:
+        """Quantité brute d'un token détenue par ``owner`` (somme de ses comptes pour ce token)."""
+        result = await self.call("getTokenAccountsByOwner",
+                                 [owner, {"mint": mint}, {"encoding": "jsonParsed", "commitment": "confirmed"}],
+                                 critical=True)
+        total = 0
+        for item in (result or {}).get("value", []):
+            info = (((item.get("account") or {}).get("data") or {}).get("parsed") or {}).get("info") or {}
+            total += int((info.get("tokenAmount") or {}).get("amount") or 0)
+        return total

@@ -125,7 +125,11 @@ function renderState(s) {
   if (!s.schedule.enabled) { sc.className = "chip"; sc.innerHTML = "<i></i>Horaires libres"; }
   else if (s.schedule.open) { sc.className = "chip ok"; sc.innerHTML = `<i></i>Achats autorisés jusqu'à ${next}`; }
   else { sc.className = "chip warn"; sc.innerHTML = `<i></i>Hors horaires — reprise à ${next}`; }
-  $("#chip-venue").innerHTML = `<i></i>Exécution : ${s.venue === "gmgn" ? "GMGN" : "Jupiter"}`;
+  $("#chip-venue").innerHTML = s.account === "real"
+    ? `<i></i>Réel · ${s.wallet ? short(s.wallet) : "aucun wallet"}` : "<i></i>Démo · devis Jupiter réels";
+  $("#chip-venue").className = `chip ${s.account === "real" ? "bad" : "gold"}`;
+  $("#btn-start").disabled = s.emergency || s.bot_state === "RUNNING";
+  $("#btn-stop").disabled = s.bot_state !== "RUNNING";
   const urgent = $("#btn-urgent");
   urgent.classList.toggle("on", s.emergency);
   urgent.textContent = s.emergency ? "⚠ Urgence active — lever" : "⚠ Arrêt d'urgence";
@@ -150,9 +154,24 @@ function renderState(s) {
   $("#k-traders").textContent = `${s.counts.traders} / ${s.counts.max_traders}`;
   $("#k-credits").textContent = num(s.credits.used);
   $("#home-banner b").textContent = `Version ${s.version} — ${s.release_name}`;
-  $("#home-banner-text").textContent = s.engine_available ? "" :
-    "Les agents et le JUDGE fonctionnent ; l'exécution des ordres (démo puis réel) et le moteur automatique 24 h/24 arrivent par mises à jour.";
+  const mon = s.engine && s.engine.monitor;
+  $("#home-banner-text").textContent = s.emergency ? "ARRÊT D'URGENCE actif : aucune transaction possible."
+    : s.bot_state === "RUNNING"
+      ? `Le bot copie tes traders en ${s.account === "real" ? "COMPTE RÉEL" : "compte démo"}${mon ? (mon.connected ? " — connexion temps réel active" : " — connexion en cours…") : ""}. Tu peux fermer la fenêtre : il continue en arrière-plan.`
+      : s.engine_running ? "Bot stoppé : aucun nouvel achat, les positions ouvertes restent surveillées."
+        : "Appuie sur DÉMARRER pour lancer le copy trading automatique.";
+  renderActivity(s.alerts || []);
   if (s.first_run && !store.get("wizard-done") && !$("#wizard").classList.contains("on")) openWizard();
+}
+
+let lastAlertId = null;
+function renderActivity(alerts) {
+  const icon = {info: "ok", warning: "warn", error: "bad"};
+  $("#activity").innerHTML = alerts.length ? alerts.map((a) => `<div class="row" style="gap:10px;padding:6px 0;border-bottom:1px solid var(--line)"><span class="chip ${icon[a.level] || ""}" style="padding:2px 8px">${a.level === "info" ? "Info" : a.level === "warning" ? "Attention" : "Erreur"}</span><span style="flex:1">${esc(a.message)}</span><span class="dim">${ago(a.at)}</span></div>`).join("")
+    : `<div class="empty">Rien pour l'instant. Les achats, ventes et messages du bot s'afficheront ici.</div>`;
+  const newest = alerts.length ? alerts[0].id : 0;
+  if (lastAlertId !== null && newest > lastAlertId) alerts.filter((a) => a.id > lastAlertId).reverse().forEach((a) => toast(a.message, a.level === "info" ? "ok" : "err"));
+  lastAlertId = newest;
 }
 
 async function refreshState() {
@@ -277,10 +296,6 @@ async function loadSettings() {
   const sd = settingsData;
   $("#profiles").innerHTML = Object.entries(sd.profiles).map(([k, p]) => `<div class="pcard ${sd.profile === k ? "on" : ""}" data-profile="${k}"><h3>${esc(p.title)}${k === "equilibre" ? ' <span class="chip gold" style="padding:1px 8px;font-size:10.5px">conseillé</span>' : ""}</h3><p>${esc(p.description)}</p></div>`).join("")
     + (sd.profile ? "" : `<p class="muted" style="grid-column:1/-1;margin:0">Réglages personnalisés (aucun profil ne correspond exactement).</p>`);
-  const venue = sd.sections.execution.venue;
-  $("#venues").innerHTML = `
-    <div class="pcard ${venue === "gmgn" ? "on" : ""}" data-venue="gmgn"><h3>GMGN</h3><p>API officielle de GMGN. Frais : 1 % par achat ou vente + frais de priorité. Clé API GMGN nécessaire.</p></div>
-    <div class="pcard ${venue === "jupiter" ? "on" : ""}" data-venue="jupiter"><h3>Jupiter</h3><p>Agrégateur de référence sur Solana. Frais : en général 0,05 à 0,5 %, lus dans chaque devis.</p></div>`;
   $("#limits").innerHTML = LIMITS.map(([s, k, label, unit, help]) => `<div class="setting"><div><b>${esc(label)}</b><span>${esc(help)}</span></div>${settingInput(s, k, unit)}</div>`).join("")
     + `<details class="adv"><summary>Réglages avancés</summary>${ADVANCED.map(([s, k, label, unit]) => `<div class="setting"><div><b>${esc(label)}</b></div>${settingInput(s, k, unit)}</div>`).join("")}</details>`;
   $$("[data-s]").forEach((el) => {
@@ -303,10 +318,6 @@ async function loadSettings() {
     try { await api("/api/profile", {name: c.dataset.profile}); toast(`Profil « ${c.querySelector("h3").firstChild.textContent.trim()} » appliqué.`, "ok"); loadSettings(); refreshState(); }
     catch (e) { toast(e.message, "err"); }
   });
-  $$("[data-venue]").forEach((c) => c.onclick = async () => {
-    try { await api("/api/settings", {section: "execution", key: "venue", value: c.dataset.venue}); loadSettings(); refreshState(); }
-    catch (e) { toast(e.message, "err"); }
-  });
 }
 
 async function saveSetting(section, key, el) {
@@ -325,8 +336,7 @@ async function saveSetting(section, key, el) {
 /* ================================================================ clés + diagnostic */
 const KEYS = [
   ["HELIUS_API_KEY", "Helius", "Obligatoire — lecture de la blockchain en temps réel", "https://dashboard.helius.dev"],
-  ["GMGN_API_KEY", "GMGN", "Pour exécuter les ordres sur GMGN (permission « swap »)", "https://gmgn.ai/ai"],
-  ["JUPITER_API_KEY", "Jupiter", "Prix et devis (et exécution si tu choisis Jupiter)", "https://developers.jup.ag"],
+  ["JUPITER_API_KEY", "Jupiter", "Optionnelle (gratuite) — devis plus rapides : conseillée pour le compte réel", "https://portal.jup.ag"],
   ["RUGCHECK_API_KEY", "RugCheck", "Optionnelle — rapports de risque plus frais", "https://rugcheck.xyz"],
 ];
 
@@ -345,32 +355,34 @@ async function loadKeys(target = "#keys") {
   });
 }
 
-async function loadGmgnKey() {
-  const k = await api("/api/gmgn/key");
-  const chip = $("#gk-chip");
-  chip.className = `chip ${k.exists ? "ok" : "warn"}`;
-  chip.innerHTML = `<i></i>${k.exists ? "créée" : "à créer"}`;
+async function loadWallet() {
+  const w = await api("/api/wallet");
+  const chip = $("#w-chip");
+  chip.className = `chip ${w.exists ? "ok" : "warn"}`;
+  chip.innerHTML = `<i></i>${w.exists ? "connecté" : "à ajouter"}`;
   const steps = `<ol style="margin:12px 0 0;padding-left:18px;line-height:1.8">
-      <li>Clique sur <b>Copier la clé publique</b>.</li>
-      <li>Sur <a href="https://gmgn.ai/ai" target="_blank" rel="noopener">gmgn.ai/ai</a>, colle-la dans <b>Upload Public Key</b>.</li>
-      <li>Laisse <b>Enable Reading</b> activé, active <b>Enable Trading</b> (double authentification requise), puis <b>Next</b>.</li>
-      <li>GMGN t'affiche ta <b>clé API</b> : colle-la ci-dessous dans « GMGN », puis <b>Enregistrer les clés</b>.</li></ol>`;
-  $("#gmgn-key").innerHTML = k.exists
-    ? `<p class="muted" style="margin-top:0">Cette clé prouve à GMGN que les ordres viennent de ton logiciel. Elle ne donne <b>aucun accès</b> à ton wallet. La partie secrète reste dans le coffre-fort de Windows.</p>
-       <textarea class="input mono" rows="4" readonly id="gk-pem" style="font-size:12px">${esc(k.public_pem)}</textarea>
-       <div class="row" style="margin-top:10px"><button class="btn gold" id="gk-copy">Copier la clé publique</button><span class="spacer"></span><button class="btn ghost sm" id="gk-replace">Remplacer la clé</button></div>${steps}`
-    : `<p class="muted" style="margin-top:0">Pour trader sur GMGN, le logiciel a besoin de sa propre clé de signature. Elle est créée sur ce PC et sa partie secrète ne le quitte jamais. Elle ne donne <b>aucun accès</b> à ton wallet.</p>
-       <button class="btn gold" id="gk-create">Créer ma clé GMGN</button>${steps}`;
-  const create = async (replace) => { await api("/api/gmgn/key", {replace}); toast("Clé GMGN créée. Copie la clé publique sur gmgn.ai/ai.", "ok"); loadGmgnKey(); };
-  if ($("#gk-create")) $("#gk-create").onclick = (e) => busy(e.currentTarget, "Création…", () => create(false));
-  if ($("#gk-replace")) $("#gk-replace").onclick = (e) => {
-    if (!confirm("Remplacer la clé ? Ta clé API GMGN actuelle ne fonctionnera plus : il faudra en recréer une sur gmgn.ai/ai.")) return;
-    busy(e.currentTarget, "…", () => create(true));
-  };
-  if ($("#gk-copy")) $("#gk-copy").onclick = async () => {
-    const pem = $("#gk-pem").value;
-    try { await navigator.clipboard.writeText(pem); } catch { $("#gk-pem").select(); document.execCommand("copy"); }
-    toast("Clé publique copiée. Colle-la sur gmgn.ai/ai.", "ok");
+      <li>Dans l'extension <b>Phantom</b> : clique sur ton avatar (en haut à gauche) → <b>Ajouter un compte</b> → <b>Créer un nouveau compte</b>. Nomme-le « Bot ».</li>
+      <li>Envoie sur ce compte <b>seulement</b> le budget du bot (ex. 17,50 € + 5 € de frais, en SOL). Jamais tes économies.</li>
+      <li>Toujours dans Phantom : avatar → <b>Paramètres</b> (roue dentée) → <b>Gérer les comptes</b> → compte « Bot » → <b>Afficher la clé privée</b> → réseau <b>Solana</b>.</li>
+      <li>Copie cette clé privée et colle-la ci-dessous, <b>sur ce PC uniquement</b> (jamais dans un chat, un mail ou un site).</li></ol>
+      <p class="dim" style="font-size:12px;margin:10px 0 0">Ce n'est pas la phrase de récupération (12 mots) : elle sera toujours refusée. La clé est rangée dans le Gestionnaire d'identifiants de Windows et ne s'affiche plus jamais.</p>`;
+  $("#wallet").innerHTML = w.exists
+    ? `<p class="muted" style="margin-top:0">Le bot signe lui-même ses ordres sur ce PC, uniquement quand le JUDGE les approuve et que le <b>compte réel</b> est activé. Tous ses trades s'affichent dans Phantom, sur le compte « Bot ».</p>
+       <div class="setting"><div><b>Adresse du compte bot</b><span>À vérifier : c'est la même que dans Phantom</span></div><div class="addr mono" style="word-break:break-all">${esc(w.address)}</div></div>
+       <div class="setting"><div><b>Solde</b><span>Lu sur la blockchain</span></div><div class="mono">${w.balance ? num(w.balance.sol, 4) + " SOL" : "illisible (clé Helius ?)"}</div></div>
+       <div class="row" style="margin-top:10px"><a class="btn sm" href="https://solscan.io/account/${esc(w.address)}" target="_blank" rel="noopener">Voir sur Solscan</a><span class="spacer"></span><button class="btn ghost sm" id="w-delete">Retirer ce wallet</button></div>`
+    : `<p class="muted" style="margin-top:0">Pour le <b>compte réel</b>, le bot a besoin d'un compte Phantom <b>dédié</b>, séparé de ton compte principal. Le compte démo n'en a pas besoin.</p>
+       <div class="row"><input class="input mono" type="password" autocomplete="off" id="w-key" placeholder="Clé privée du compte « Bot »" style="flex:1"><button class="btn gold" id="w-import">Enregistrer</button></div>${steps}`;
+  if ($("#w-import")) $("#w-import").onclick = (e) => busy(e.currentTarget, "Vérification…", async () => {
+    const input = $("#w-key");
+    const r = await api("/api/wallet", {private_key: input.value});
+    input.value = "";
+    toast(`Compte bot enregistré : ${short(r.address)}. Vérifie que c'est la même adresse dans Phantom.`, "ok");
+    loadWallet(); refreshState();
+  });
+  if ($("#w-delete")) $("#w-delete").onclick = (e) => {
+    if (!confirm("Retirer ce wallet du logiciel ? Les fonds restent dans Phantom ; le compte réel sera désactivé.")) return;
+    busy(e.currentTarget, "…", async () => { await api("/api/wallet/delete", {}); toast("Wallet retiré du logiciel.", "ok"); loadWallet(); refreshState(); });
   };
 }
 
@@ -400,8 +412,29 @@ $("#btn-u-install").onclick = (e) => {
 
 /* ================================================================ commandes */
 $$("#account-seg button").forEach((b) => b.onclick = async () => {
-  try { await api("/api/account", {account: b.dataset.account}); toast("Compte démo activé : argent fictif, marché réel.", "ok"); refreshState(); }
-  catch (e) { toast(e.message, "err"); }
+  const real = b.dataset.account === "real";
+  if (real && state && state.account === "real") return;
+  if (real) {
+    if (!state || !state.wallet) { toast("Ajoute d'abord le compte Phantom dédié au bot (menu Connexions).", "err"); go("connections"); return; }
+    const c = state.capital;
+    const ok = confirm(`Activer le COMPTE RÉEL ?\n\nLe bot pourra acheter et vendre avec les vrais fonds du compte Phantom ${short(state.wallet)}.\n\nLimites : ${eur(c.max_position)} max par achat, ${c.max_open} positions max, perte max ${eur(c.max_daily_loss)} par jour. Chaque ordre doit être approuvé par le JUDGE.\n\nLe compte réel se désactive à la fermeture du logiciel. Tu peux perdre l'argent investi.`);
+    if (!ok) return;
+  }
+  try {
+    const r = await api("/api/account", {account: b.dataset.account, confirm: real ? true : undefined});
+    toast(real ? `Compte RÉEL activé (${r.balance ? num(r.balance.sol, 4) + " SOL" : "solde illisible"}).` : "Compte démo activé : argent fictif, marché réel.", real ? "err" : "ok");
+    refreshState();
+  } catch (e) { toast(e.message, "err"); }
+});
+$("#btn-start").onclick = (e) => busy(e.currentTarget, "Démarrage…", async () => {
+  await api("/api/bot", {action: "start"});
+  toast(state && state.account === "real" ? "Bot démarré en COMPTE RÉEL." : "Bot démarré en compte démo.", "ok");
+  refreshState();
+});
+$("#btn-stop").onclick = (e) => busy(e.currentTarget, "Arrêt…", async () => {
+  await api("/api/bot", {action: "stop"});
+  toast("Bot stoppé : plus de nouvel achat. Les positions ouvertes restent protégées.", "ok");
+  refreshState();
 });
 $("#btn-urgent").onclick = async () => {
   const activate = !(state && state.emergency);
@@ -420,11 +453,11 @@ let wzStep = 0;
 const WZ = [
   () => `<h2>Bienvenue dans ton Trading Desk</h2><p>En 3 étapes, le logiciel sera prêt. Tu commences en <b>compte démo</b> : argent fictif, marché réel, aucun risque.</p>
     <div class="grid g3" style="margin-top:16px"><div class="panel panel-b"><b>Les agents</b><p class="muted" style="margin:6px 0 0">surveillent tes traders et vérifient chaque token.</p></div><div class="panel panel-b"><b>Le JUDGE</b><p class="muted" style="margin:6px 0 0">autorise ou refuse chaque achat selon des règles fixes.</p></div><div class="panel panel-b"><b>Toi</b><p class="muted" style="margin:6px 0 0">choisis un profil, et c'est tout.</p></div></div>`,
-  () => `<h2>1. Tes clés de connexion</h2><p>Helius est obligatoire (gratuit). GMGN sert à passer les ordres. Elles restent sur ce PC.</p><div id="wz-keys"></div>`,
+  () => `<h2>1. Tes clés de connexion</h2><p>Helius est obligatoire (gratuit) : il permet de voir les trades de tes traders en temps réel. Les clés restent sur ce PC.</p><div id="wz-keys"></div>`,
   () => `<h2>2. Ton profil de risque</h2><p>Tu pourras le changer à tout moment dans Réglages.</p><div class="profiles" id="wz-profiles" style="grid-template-columns:1fr"></div>`,
   () => `<h2>3. Un premier trader à suivre</h2><p>Sur GMGN, ouvre un wallet « smart money » avec un bon historique et copie son adresse publique.</p>
     <div class="row" style="margin-top:12px"><input class="input mono" id="wz-addr" placeholder="Adresse publique (facultatif)" style="flex:1"><button class="btn" id="wz-add">Ajouter</button></div>
-    <p class="dim" style="font-size:12.5px">Ensuite : menu Traders suivis → « Évaluer », et menu Connexions → « Lancer le test ».</p>`,
+    <p class="dim" style="font-size:12.5px">Ensuite : menu Traders suivis → « Évaluer », puis <b>▶ Démarrer</b> (compte démo). Le compte réel se branche plus tard, avec un compte Phantom dédié au bot (menu Connexions).</p>`,
 ];
 function openWizard() { wzStep = 0; $("#wizard").classList.add("on"); renderWizard(); }
 function closeWizard() { $("#wizard").classList.remove("on"); store.set("wizard-done", "1"); }
@@ -448,7 +481,7 @@ $("#wz-skip").onclick = closeWizard;
 /* ================================================================ navigation */
 const LOADERS = {
   home: () => Promise.all([loadAgents(), loadOpps()]), agents: loadAgents, judge: loadDecisions, traders: loadTraders,
-  journal: loadJournal, settings: loadSettings, connections: () => Promise.all([loadGmgnKey(), loadKeys()]), updates: () => loadUpdate(false), vps: async () => {},
+  journal: loadJournal, settings: loadSettings, connections: () => Promise.all([loadWallet(), loadKeys()]), updates: () => loadUpdate(false), vps: async () => {},
 };
 function go(view) {
   if (!LOADERS[view]) view = "home";
