@@ -215,7 +215,11 @@ class CopyTradingEngine:
             whale = await WhaleAgent(self.providers.rpc, self.db, settings, timeout=timeout).analyze(
                 mint, snapshot, sol_usd, now=self.clock())
         book = self.portfolio.snapshot(book_mode(self.db.get_control()["mode"]), settings, self.clock())
-        sniper = SniperAgent(settings).propose(event=event, head=head, risk=risk, eur_per_sol=eur_per_sol,
+        sized_event = event
+        if event.get("quote_mint") == tokens["usdc_mint"] and sol_usd and event.get("quote_amount"):
+            # achat du trader en USDC : converti en SOL pour comparer à ses achats habituels (calculés en SOL)
+            sized_event = {**event, "quote_amount": float(event["quote_amount"]) / sol_usd}
+        sniper = SniperAgent(settings).propose(event=sized_event, head=head, risk=risk, eur_per_sol=eur_per_sol,
                                                open_positions=book["count"], invested_eur=book["invested_eur"])
         for report in (risk, whale, sniper):
             save_report(self.db, report)
@@ -307,8 +311,8 @@ class CopyTradingEngine:
         self._head_running.add(wallet)
         try:
             settings = self._settings()
-            report = await HeadAgent(self.providers.rpc, self.db, settings,
-                                     usdc_mint=settings["tokens"]["usdc_mint"]).evaluate(wallet)
+            report = await HeadAgent(self.providers.rpc, self.db, settings, usdc_mint=settings["tokens"]["usdc_mint"],
+                                     jupiter=self.providers.jupiter).evaluate(wallet)
             save_report(self.db, report)
         finally:
             self._head_running.discard(wallet)

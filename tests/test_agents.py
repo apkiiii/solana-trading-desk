@@ -444,3 +444,22 @@ def test_exit_flags_unconfirmed_transactions(db):
 
 def test_unused_imports_guard():
     assert TOKEN_B and RENT
+
+
+def test_usdc_trades_are_counted_when_a_sol_price_is_given():
+    events = []
+    for i in range(4):
+        mint = f"Usd{i:041d}"[:44]
+        events += [ev("BUY", 1_760_000_000 + i * DAY, 0, mint=mint, quote=USDC),
+                   ev("SELL", 1_760_000_000 + i * DAY + 600, 0, mint=mint, quote=USDC)]
+    # 25 USDC à l'achat, 35 USDC à la revente (+40 %) ; les montants USDC ont 6 décimales
+    for e_buy, e_sell in zip(events[::2], events[1::2], strict=True):
+        object.__setattr__(e_buy, "quote_amount_raw", 25_000_000)
+        object.__setattr__(e_buy, "quote_decimals", 6)
+        object.__setattr__(e_sell, "quote_amount_raw", 35_000_000)
+        object.__setattr__(e_sell, "quote_decimals", 6)
+    stats = compute_trader_stats(events, usd_per_sol=125.0, usdc_mint=USDC)
+    assert stats.closed_trades == 4 and stats.win_rate == 1.0
+    assert stats.avg_win_pct == pytest.approx(40.0)
+    assert stats.median_buy_sol == pytest.approx(0.2)            # 25 $ / 125 $
+    assert compute_trader_stats(events).closed_trades == 0       # sans prix : non comptés (comme avant)

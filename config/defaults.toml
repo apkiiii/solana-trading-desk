@@ -67,6 +67,7 @@ onchain_tokens = 4                # tokens examinés par recherche
 onchain_pool_sample = 1000        # dernières signatures du token listées (1 requête ; les échecs sont sautés)
 onchain_tx_per_token = 90         # transactions réussies lues par token (mesuré : ~2 vrais acheteurs >= 0,2 SOL sur 90)
 min_buy_sol = 0.2                 # achats plus petits ignorés (bruit, robots)
+onchain_prefilter_per_cycle = 8   # candidats triés rapidement par passage (1 requête chacun)
 onchain_evals_per_cycle = 1       # historiques complets notés par passage (≈ 300 transactions chacun)
 
 [execution]

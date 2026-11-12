@@ -252,6 +252,7 @@ class HunterAgent:
                  and not (set(t.get("tags") or []) & EXCLUDED_TOKEN_TAGS)]
         usdc = self.settings["tokens"]["usdc_mint"]
         min_buy = float(self.cfg["min_buy_sol"])
+        sol_usd = await self._sol_usd()
         buyers: dict[str, set[str]] = {}
         for mint in mints[: int(self.cfg["onchain_tokens"])]:
             # Transactions qui touchent le token (tous pools et routes confondus). Mesuré en réel : la plupart
@@ -275,10 +276,21 @@ class HunterAgent:
                 if not keys:
                     continue
                 payer = keys[0]["pubkey"] if isinstance(keys[0], dict) else str(keys[0])
-                event = parse_swap(tx, payer, usdc_mint=usdc)
-                if (event and event.side == "BUY" and event.token_mint == mint and event.quote_mint == SOL_MINT
-                        and (event.quote_amount or 0) >= min_buy):
-                    buyers.setdefault(payer, set()).add(mint)
+                # L'acheteur n'est pas toujours celui qui paie les frais : les applications (FOMO, Phantom
+                # Terminal…) font payer un relais. On examine donc chaque propriétaire du token dans la transaction.
+                owners = {payer} | {b.get("owner") for b in ((tx.get("meta") or {}).get("postTokenBalances") or [])
+                                    if b.get("mint") == mint and b.get("owner")}
+                for owner in owners:
+                    event = parse_swap(tx, owner, usdc_mint=usdc)
+                    if not event or event.side != "BUY" or event.token_mint != mint:
+                        continue
+                    value = event.quote_amount or 0
+                    if event.quote_mint == usdc:
+                        value = value / sol_usd if sol_usd else 0
+                    elif event.quote_mint != SOL_MINT:
+                        continue
+                    if value >= min_buy:
+                        buyers.setdefault(owner, set()).add(mint)
         followed = {t["address"] for t in self.db.list_traders()}
         for wallet, seen in buyers.items():
             if wallet in followed:
@@ -293,6 +305,13 @@ class HunterAgent:
         return len(buyers)
 
     async def evaluate_onchain(self, address: str, now: datetime) -> tuple[float | None, str | None]:
+        reason, base = await self.prefilter(address, now)
+        if reason:
+            return 0.0, reason
+        return await self.full_evaluation(address, base, now)
+
+    async def prefilter(self, address: str, now: datetime) -> tuple[str | None, dict[str, Any]]:
+        """Tri rapide (1 requête) sur la liste des transactions du wallet. Motif d'exclusion ou None."""
         agents = self.settings["agents"]
         judge = self.settings["judge"]
         limit = int(agents["head_max_transactions"])
@@ -315,11 +334,16 @@ class HunterAgent:
         if reason:
             self.db.upsert_candidate(address, score=0.0, status="excluded", reason=reason,
                                      stats={**base, "evaluated_at": now.isoformat()}, evaluated_at=now)
-            return 0.0, reason
-        report = await HeadAgent(self.rpc, self.db, self.settings,
-                                 usdc_mint=self.settings["tokens"]["usdc_mint"]).evaluate(address)
+        return reason, base
+
+    async def full_evaluation(self, address: str, base: dict[str, Any], now: datetime) -> tuple[float | None, str | None]:
+        """Historique complet noté par HEAD (environ 300 transactions)."""
+        judge = self.settings["judge"]
+        report = await HeadAgent(self.rpc, self.db, self.settings, usdc_mint=self.settings["tokens"]["usdc_mint"],
+                                 jupiter=self.jupiter).evaluate(address)
         payload = {**dict(report.data or {}), **base, "evaluated_at": now.isoformat()}
         score = _f(payload.get("score"))
+        reason = None
         if report.status == UNAVAILABLE or score is None:
             reason = f"évaluation impossible : {report.summary}"
         elif score < float(judge["min_trader_score"]):
@@ -345,9 +369,17 @@ class HunterAgent:
         fresh.sort(key=lambda c: int((c["stats"] or {}).get("seen") or 0), reverse=True)
         queue = [a for a in followed if self._needs_eval(a, now, ttl)] + [c["address"] for c in fresh]
         evaluated = []
-        for address in queue[: int(self.cfg["onchain_evals_per_cycle"])]:
+        full_done = 0
+        for address in queue[: int(self.cfg.get("onchain_prefilter_per_cycle", 8))]:
             try:
-                score, reason = await self.evaluate_onchain(address, now)
+                reason, base = await self.prefilter(address, now)
+                if reason:
+                    evaluated.append((address, 0.0, reason))
+                    continue
+                if full_done >= int(self.cfg["onchain_evals_per_cycle"]):
+                    break  # vérification complète au prochain passage
+                full_done += 1
+                score, reason = await self.full_evaluation(address, base, now)
             except Exception as exc:  # noqa: BLE001
                 score, reason = None, redact(f"{type(exc).__name__}: {exc}")
             evaluated.append((address, score, reason))

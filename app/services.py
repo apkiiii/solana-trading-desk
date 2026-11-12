@@ -29,7 +29,8 @@ async def _with_providers(db: Database, job) -> Any:
 
 async def evaluate_trader(db: Database, wallet: str) -> AgentReport:
     async def job(settings, providers):
-        head = HeadAgent(providers.rpc, db, settings, usdc_mint=settings["tokens"]["usdc_mint"])
+        head = HeadAgent(providers.rpc, db, settings, usdc_mint=settings["tokens"]["usdc_mint"],
+                         jupiter=providers.jupiter)
         report = await head.evaluate(wallet)
         save_report(db, report)
         return report

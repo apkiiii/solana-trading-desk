@@ -279,3 +279,23 @@ def test_source_selection(db):
     assert HunterAgent(FakeGmgn({}), db, settings, jupiter=ChainJupiter(), rpc=ChainRpc(), dex=ChainDex()).source == "onchain"
     assert HunterAgent(None, db, settings).source is None
     assert run(HunterAgent(None, db, settings).cycle()).status == "UNAVAILABLE"
+
+
+def test_onchain_search_finds_app_users_whose_fees_are_paid_by_a_relayer(db):
+    """Cas réel observé : achat en USDC d'un utilisateur d'application ; le relais paie les frais."""
+    from tests.conftest import USDC
+    from tests.test_swap_parser import make_tx, tb
+    rpc = ChainRpc()
+    relayer, user = addr(30), addr(31)
+    now = int(datetime.now(UTC).timestamp())
+    tx = make_tx([relayer, user, "usdc_ata", "tok_ata"], [5_000_000_000, 0, 0, 0], [5_000_000_000 - 5000, 0, 0, 0],
+                 pre_tok=[tb(2, USDC, user, 100_000_000, 6)],
+                 post_tok=[tb(2, USDC, user, 50_000_000, 6), tb(3, TOKEN, user, 4_893_000_000, 6)], sig="app1")
+    tx["blockTime"] = now - 30
+    rpc.txs["app1"] = tx
+    rpc.sigs[TOKEN] = [{"signature": "app1", "err": None, "blockTime": now - 30}]
+    h = HunterAgent(None, db, load_settings(db), jupiter=ChainJupiter(), rpc=rpc, dex=ChainDex())
+    found = run(h.scan_onchain(datetime.now(UTC)))
+    assert found == 1                                   # 50 USDC à 150 $/SOL = 0,33 SOL >= 0,2
+    assert db.get_candidate(user)["status"] == "new"
+    assert db.get_candidate(relayer) is None            # le relais n'est pas un trader

@@ -16,13 +16,20 @@ from agents.base import BLOCK, OK, UNAVAILABLE, WARN, AgentReport, guarded, unav
 from data.swap_parser import parse_swap
 
 
+HEAD_VERSION = 2  # 2 : les trades en USDC sont comptés
+
+
 class HeadAgent:
     name = "HEAD"
 
-    def __init__(self, rpc: Any, db: Any, settings: Any, *, usdc_mint: str):
+    FALLBACK_USD_PER_SOL = 150.0  # seulement si le prix est indisponible (n'influence pas le % de gain)
+
+    def __init__(self, rpc: Any, db: Any, settings: Any, *, usdc_mint: str, jupiter: Any = None):
         self.rpc = rpc
         self.db = db
         self.usdc_mint = usdc_mint
+        self.jupiter = jupiter
+        self.sol_mint = settings["tokens"]["sol_mint"]
         agents = settings["agents"]
         judge = settings["judge"]
         self.max_transactions = int(agents["head_max_transactions"])
@@ -59,13 +66,25 @@ class HeadAgent:
 
     async def _evaluate(self, wallet: str) -> AgentReport:
         events = await self._fetch_events(wallet)
-        stats = compute_trader_stats(events)
+        usd_per_sol = await self._usd_per_sol()
+        stats = compute_trader_stats(events, usd_per_sol=usd_per_sol, usdc_mint=self.usdc_mint)
         score, notes = score_trader(stats, min_closed_trades=self.min_closed, min_history_days=self.min_days)
         payload = asdict(stats)
         payload.update({"score": score, "notes": notes, "evaluated_at": datetime.now(UTC).isoformat(),
+                        "head_version": HEAD_VERSION,
                         "transactions_analysed": len(events)})
         self.db.update_trader_score(wallet, score, payload)
         return self._report(wallet, score, payload)
+
+    async def _usd_per_sol(self) -> float:
+        if self.jupiter is not None:
+            try:
+                prices = await self.jupiter.get_prices([self.sol_mint])
+                if self.sol_mint in prices:
+                    return float(prices[self.sol_mint].usd_price)
+            except Exception:  # noqa: BLE001
+                pass
+        return self.FALLBACK_USD_PER_SOL
 
     # -------------------------------------------------------------- lecture cache
     def _report(self, wallet: str, score: float | None, payload: dict[str, Any]) -> AgentReport:
@@ -103,6 +122,8 @@ class HeadAgent:
         report = self.cached_report(wallet, now)
         if report.status == UNAVAILABLE:
             return True
+        if report.data.get("source") != "gmgn" and report.data.get("head_version") != HEAD_VERSION:
+            return True  # note calculée par une ancienne méthode (ex. trades en USDC ignorés avant 0.7.5)
         evaluated_at = datetime.fromisoformat(report.data["evaluated_at"])
         return ((now or datetime.now(UTC)) - evaluated_at).total_seconds() > self.cache_hours * 3600
 

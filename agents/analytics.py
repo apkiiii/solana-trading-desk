@@ -1,7 +1,9 @@
 """Calcul des performances d'un trader à partir de ses swaps (fonctions pures, sans réseau).
 
 Méthode :
-- seuls les swaps payés/reçus en SOL sont comptés (unités homogènes) ;
+- les swaps payés/reçus en SOL sont comptés tels quels ; ceux en USDC (fréquents chez les utilisateurs
+  d'applications comme FOMO ou Phantom Terminal) sont convertis en SOL au cours fourni (``usd_per_sol``).
+  Le pourcentage de gain d'un trade acheté et revendu en USDC ne dépend pas de ce cours ;
 - coût moyen par token : une vente « ferme » la part vendue de la position ;
 - un trade clôturé est gagnant si le SOL reçu dépasse le coût de la part vendue ;
 - drawdown = plus forte baisse du gain cumulé réalisé depuis son plus haut ;
@@ -65,16 +67,33 @@ def _get(event: Any, key: str) -> Any:
     return event[key] if isinstance(event, dict) else getattr(event, key)
 
 
-def compute_trader_stats(events: list[Any]) -> TraderStats:
-    """``events`` : objets ``SwapEvent`` ou lignes de la table ``source_events``."""
+def _quote_in_sol(e: Any, usd_per_sol: float | None, usdc_mint: str | None) -> float | None:
+    quote = _get(e, "quote_mint")
+    raw = int(_get(e, "quote_amount_raw") or 0)
+    if quote == SOL_MINT:
+        return raw / LAMPORTS
+    if usdc_mint and quote == usdc_mint and usd_per_sol and usd_per_sol > 0:
+        decimals = _get(e, "quote_decimals")
+        return raw / 10 ** int(decimals if decimals is not None else 6) / usd_per_sol
+    return None
+
+
+def compute_trader_stats(events: list[Any], *, usd_per_sol: float | None = None,
+                         usdc_mint: str | None = None) -> TraderStats:
+    """``events`` : objets ``SwapEvent`` ou lignes de la table ``source_events``.
+
+    Sans ``usd_per_sol``, seuls les swaps en SOL sont comptés."""
     rows = []
     for e in events:
-        if _get(e, "side") not in ("BUY", "SELL") or _get(e, "quote_mint") != SOL_MINT:
+        if _get(e, "side") not in ("BUY", "SELL"):
             continue
         if _get(e, "block_time") is None or not _get(e, "token_mint"):
             continue
+        sol = _quote_in_sol(e, usd_per_sol, usdc_mint)
+        if sol is None:
+            continue
         rows.append((int(_get(e, "block_time")), _get(e, "side"), _get(e, "token_mint"),
-                     int(_get(e, "token_amount_raw")), int(_get(e, "quote_amount_raw")) / LAMPORTS))
+                     int(_get(e, "token_amount_raw")), sol))
     rows.sort(key=lambda r: r[0])
     stats = TraderStats(swaps=len(rows))
     if not rows:
