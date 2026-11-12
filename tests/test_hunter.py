@@ -174,9 +174,9 @@ def test_clearly_better_candidate_replaces_the_weakest(db):
     assert addr(5) in after and len(after) == 2 and len(set(before) & after) == 1
 
 
-def test_without_gmgn_key_hunter_explains_what_to_do(db):
+def test_without_any_source_hunter_explains_what_to_do(db):
     report = run(HunterAgent(None, db, load_settings(db)).cycle())
-    assert report.status == "UNAVAILABLE" and "GMGN" in report.summary
+    assert report.status == "UNAVAILABLE" and "source" in report.summary
 
 
 def test_api_errors_never_crash_the_cycle(db):
@@ -189,3 +189,93 @@ def test_api_errors_never_crash_the_cycle(db):
 
     report = run(hunter(db, Broken({})).cycle(now=NOW))
     assert report.status == "UNAVAILABLE" and "injoignable" in report.summary
+
+
+# ------------------------------------------------------------ source blockchain (sans clé)
+from tests.test_agents import POOL, buy_tx, pair, sell_tx  # noqa: E402
+
+DAY = 86400
+
+
+class ChainRpc:
+    def __init__(self):
+        self.txs: dict = {}
+        self.sigs: dict = {}
+
+    async def get_signatures_for_address(self, address, limit=100, before=None, **_):
+        items = self.sigs.get(address, [])
+        if before:
+            items = items[[s["signature"] for s in items].index(before) + 1:]
+        return items[:limit]
+
+    async def get_transaction(self, signature, **_):
+        return self.txs.get(signature)
+
+
+class ChainJupiter(FakeJupiter):
+    async def top_tokens(self, category, interval, limit=20):
+        return [{"id": SOL, "liquidity": 1e9}, {"id": TOKEN, "liquidity": 90_000.0},
+                {"id": "Tiny1111111111111111111111111111111111111111", "liquidity": 500.0}]
+
+
+class ChainDex:
+    async def best_pair(self, mint):
+        return pair() if mint == TOKEN else None
+
+
+def chain_world():
+    """Un bon trader régulier, un robot hyperactif, un petit wallet et un micro-acheteur."""
+    rpc = ChainRpc()
+    good, bot, small, tiny = addr(20), addr(21), addr(22), addr(23)
+    now = int(datetime.now(UTC).timestamp())
+    pool = []
+    for i, (wallet, sol) in enumerate(((good, 1_000_000_000), (bot, 500_000_000), (small, 300_000_000),
+                                       (tiny, 50_000_000))):
+        sig = f"pool{i}"
+        rpc.txs[sig] = buy_tx(sig, wallet=wallet, sol=sol, ts=now - 60)
+        pool.append({"signature": sig, "err": None, "blockTime": now - 60})
+    rpc.sigs[POOL] = pool
+    # historique du bon trader : 36 trades sur ~35 jours, 75 % gagnants
+    start = now - int(35.5 * DAY)
+    history = []
+    for i in range(36):
+        mint = f"Mint{i:040d}"[:44]
+        b, s = f"g{i}b", f"g{i}s"
+        rpc.txs[b] = buy_tx(b, wallet=good, mint=mint, ts=start + i * DAY)
+        rpc.txs[s] = sell_tx(s, wallet=good, mint=mint, sol=1_400_000_000 if i % 4 else 800_000_000,
+                             ts=start + i * DAY + 3600)
+        history += [{"signature": s, "err": None, "blockTime": start + i * DAY + 3600},
+                    {"signature": b, "err": None, "blockTime": start + i * DAY}]
+    rpc.sigs[good] = list(reversed(history))
+    rpc.sigs[bot] = [{"signature": f"x{i}", "err": None, "blockTime": now - i * 300} for i in range(300)]
+    rpc.sigs[small] = [{"signature": f"y{i}", "err": None, "blockTime": now - i * DAY} for i in range(10)]
+    return rpc, good, bot, small, tiny
+
+
+def test_onchain_search_finds_and_checks_traders_without_any_key(db):
+    rpc, good, bot, small, tiny = chain_world()
+    apply_user_change(db, "discovery", "onchain_evals_per_cycle", 5, actor="dashboard")
+    h = HunterAgent(None, db, load_settings(db), jupiter=ChainJupiter(), rpc=rpc, dex=ChainDex())
+    assert h.source == "onchain"
+    report = run(h.cycle())
+    assert report.data["source"] == "onchain" and report.data["discovered"] == 3   # micro-achat ignoré
+    assert db.get_candidate(tiny) is None
+    roster = db.list_traders(active_only=True)
+    assert [t["address"] for t in roster] == [good] and roster[0]["source"] == SOURCE_AUTO
+    assert roster[0]["score"] >= 60 and roster[0]["stats"]["avg_win_pct"] is not None
+    assert "trop actif" in db.get_candidate(bot)["reason"]
+    assert "pas assez" in db.get_candidate(small)["reason"]
+    assert report.status == "WARN"                         # 1/5 : la recherche continue
+    # passage suivant 2 min plus tard : pas de nouveau scan (toutes les 15 min), rien à réévaluer
+    report2 = run(h.cycle(now=datetime.now(UTC) + timedelta(minutes=2)))
+    assert report2.data["discovered"] is None and report2.data["evaluated"] == []
+
+
+def test_source_selection(db):
+    settings = load_settings(db)
+    assert HunterAgent(FakeGmgn({}), db, settings, jupiter=ChainJupiter(), rpc=ChainRpc(), dex=ChainDex()).source == "gmgn"
+    apply_user_change(db, "discovery", "source", "onchain", actor="dashboard")
+    settings = load_settings(db)
+    assert HunterAgent(FakeGmgn({}), db, settings, jupiter=ChainJupiter(), rpc=ChainRpc(), dex=ChainDex()).source == "onchain"
+    assert HunterAgent(None, db, settings).source is None
+    assert run(HunterAgent(None, db, settings).cycle()).status == "UNAVAILABLE"

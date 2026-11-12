@@ -274,7 +274,9 @@ class CopyTradingEngine:
         """Un passage de HUNTER : recherche, évaluation et remplacement des traders."""
         settings = self._settings()
         report = await HunterAgent(getattr(self.providers, "gmgn", None), self.db, settings,
-                                   jupiter=self.providers.jupiter).cycle(now=self.clock())
+                                   jupiter=self.providers.jupiter,
+                                   rpc=getattr(self.providers, "public_rpc", None) or self.providers.rpc,
+                                   dex=self.providers.dex).cycle(now=self.clock())
         save_report(self.db, report)
         for change in (report.data or {}).get("changes", []):
             self.db.add_alert("info", f"HUNTER : {change}")
@@ -286,7 +288,7 @@ class CopyTradingEngine:
         while not stop.is_set():
             settings = self._settings()
             interval = float(settings["discovery"]["interval_minutes"]) * 60
-            if settings["discovery"]["enabled"] and getattr(self.providers, "gmgn", None) is not None:
+            if settings["discovery"]["enabled"]:
                 try:
                     await self.hunt()
                 except Exception as exc:  # noqa: BLE001

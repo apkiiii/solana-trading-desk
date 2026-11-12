@@ -17,7 +17,7 @@ from data.providers.jupiter import JupiterClient
 from data.providers.rugcheck import RugCheckClient
 from data.providers.solana_rpc import TOKEN_2022_PROGRAM, SolanaRpcClient
 from data.rate_limiter import AsyncRateLimiter
-from security.secrets import ApiSecrets, SecretsError
+from security.secrets import ApiSecrets
 from tests.conftest import SOL, TOKEN, USDC
 
 EURC = "HzwqbKZw8HxMN6bF2yFZNrht3c2iXXzpKcFu7uBEDKtr"
@@ -307,12 +307,15 @@ def test_snapshot_records_every_failing_source():
 
 
 # ----------------------------------------------------------------- factory
-def test_factory_requires_helius_key_and_builds_urls(db):
+def test_factory_uses_public_rpc_without_key_and_builds_urls(db):
     settings = load_settings(db)
-    with pytest.raises(SecretsError):
-        build_providers(settings, ApiSecrets())
+    keyless = build_providers(settings, ApiSecrets())
+    assert keyless.keyless_rpc and keyless.ws_url == "wss://api.mainnet.solana.com"
+    assert keyless.public_rpc is keyless.rpc and keyless.rpc.name == "solana-public"
+    run(keyless.aclose())
     providers = build_providers(settings, ApiSecrets(helius_api_key="abcdef123456"), db)
     assert providers.ws_url == "wss://mainnet.helius-rpc.com/?api-key=abcdef123456"
+    assert not providers.keyless_rpc and providers.public_rpc is not providers.rpc
     run(providers.aclose())
     override = build_providers(settings, ApiSecrets(rpc_url_override="https://my-rpc.example/x"))
     assert override.ws_url == "wss://my-rpc.example/x"

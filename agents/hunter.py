@@ -1,6 +1,14 @@
 """HUNTER : cherche lui-même les meilleurs traders à copier et remplace ceux qui ne sont pas concluants.
 
-Source : API officielle GMGN en lecture (forfait gratuit suffisant) —
+Deux sources possibles (réglage ``discovery.source``, « auto » par défaut) :
+
+A. **Blockchain, sans aucune clé** (utilisée si aucune clé GMGN n'est enregistrée) —
+   1. Jupiter Tokens API (gratuite, sans clé) : tokens les plus actifs (« organic score ») ;
+   2. RPC public Solana : dernières transactions de leur pool -> wallets qui ont acheté ;
+   3. pour chaque wallet : tri rapide sur la liste de ses transactions (trop peu, trop actif, inactif),
+      puis historique complet noté par HEAD (mêmes règles que pour un trader ajouté à la main).
+
+B. **API officielle GMGN en lecture** (forfait gratuit suffisant, clé API nécessaire) —
 - listes « smart money » (portefeuilles rentables repérés par GMGN) et « KOL » (traders connus) ;
 - statistiques de chaque wallet sur 7 ou 30 jours (``wallet_stats``) ;
 - ses derniers trades (``wallet_activity``) pour mesurer le gain moyen réel de ses ventes.
@@ -25,7 +33,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from agents.base import OK, UNAVAILABLE, WARN, AgentReport, unavailable
+from agents.head import HeadAgent
 from core.logs import redact
+from data.swap_parser import SOL_MINT, parse_swap
 
 SOURCE_AUTO = "auto"
 
@@ -139,21 +149,37 @@ def evaluate_wallet(stats: Any, activity: list[dict[str, Any]], cfg: Any, *, sol
 class HunterAgent:
     name = "HUNTER"
 
-    def __init__(self, gmgn: Any, db: Any, settings: Any, *, jupiter: Any = None):
+    def __init__(self, gmgn: Any, db: Any, settings: Any, *, jupiter: Any = None, rpc: Any = None, dex: Any = None):
         self.gmgn = gmgn
         self.db = db
         self.settings = settings
         self.cfg = settings["discovery"]
         self.jupiter = jupiter
+        self.rpc = rpc
+        self.dex = dex
+
+    @property
+    def source(self) -> str | None:
+        """Source utilisée pour ce passage : « gmgn », « onchain » ou None (rien de disponible)."""
+        wanted = self.cfg.get("source", "auto")
+        onchain_ok = self.rpc is not None and self.jupiter is not None and self.dex is not None
+        if wanted == "gmgn":
+            return "gmgn" if self.gmgn is not None else None
+        if wanted == "onchain":
+            return "onchain" if onchain_ok else None
+        if self.gmgn is not None:
+            return "gmgn"
+        return "onchain" if onchain_ok else None
 
     # --------------------------------------------------------------- passage
     async def cycle(self, now: datetime | None = None) -> AgentReport:
         now = now or datetime.now(UTC)
-        if self.gmgn is None:
-            return unavailable(self.name, None, "Clé API GMGN manquante : ajoute-la dans Connexions pour que le "
-                                                "bot trouve lui-même les traders.")
+        source = self.source
+        if source is None:
+            return unavailable(self.name, None, "Aucune source disponible pour chercher des traders "
+                                                "(clé GMGN absente et blockchain inaccessible).")
         try:
-            return await self._cycle(now)
+            return await (self._cycle(now) if source == "gmgn" else self._cycle_onchain(now))
         except Exception as exc:  # noqa: BLE001
             return unavailable(self.name, None, redact(f"Recherche impossible : {type(exc).__name__}: {exc}"))
 
@@ -206,12 +232,136 @@ class HunterAgent:
             self.db.update_trader_score(address, score, payload)
         return score, reason
 
-    def _needs_eval(self, address: str, now: datetime) -> bool:
+    def _needs_eval(self, address: str, now: datetime, ttl_minutes: float | None = None) -> bool:
         candidate = self.db.get_candidate(address)
-        if candidate is None or not candidate.get("evaluated_at"):
+        if candidate is None or candidate.get("status") == "new" or not candidate.get("evaluated_at"):
             return True
         age = (now - datetime.fromisoformat(candidate["evaluated_at"])).total_seconds() / 60
-        return age >= float(self.cfg["stats_ttl_minutes"])
+        return age >= (ttl_minutes if ttl_minutes is not None else float(self.cfg["stats_ttl_minutes"]))
+
+    # ------------------------------------------------------- source blockchain
+    async def scan_onchain(self, now: datetime) -> int:
+        """Acheteurs récents (et sérieux) des tokens les plus actifs selon Jupiter."""
+        tokens = await self.jupiter.top_tokens(self.cfg["onchain_category"], self.cfg["onchain_interval"], limit=20)
+        skip = {self.settings["tokens"]["sol_mint"], self.settings["tokens"]["usdc_mint"],
+                self.settings["tokens"]["eurc_mint"]}
+        min_liquidity = float(self.settings["judge"]["min_liquidity_usd"])
+        mints = [t["id"] for t in tokens if t["id"] not in skip and (_f(t.get("liquidity")) or 0) >= min_liquidity]
+        usdc = self.settings["tokens"]["usdc_mint"]
+        min_buy = float(self.cfg["min_buy_sol"])
+        buyers: dict[str, set[str]] = {}
+        for mint in mints[: int(self.cfg["onchain_tokens"])]:
+            try:
+                pair = await self.dex.best_pair(mint)
+                if pair is None:
+                    continue
+                signatures = await self.rpc.get_signatures_for_address(pair.pair_address,
+                                                                       limit=int(self.cfg["onchain_pool_sample"]))
+            except Exception:  # noqa: BLE001
+                continue
+            for item in signatures:
+                if item.get("err") is not None:
+                    continue
+                try:
+                    tx = await self.rpc.get_transaction(item["signature"])
+                except Exception:  # noqa: BLE001
+                    continue
+                keys = ((tx or {}).get("transaction") or {}).get("message", {}).get("accountKeys") or []
+                if not keys:
+                    continue
+                payer = keys[0]["pubkey"] if isinstance(keys[0], dict) else str(keys[0])
+                event = parse_swap(tx, payer, usdc_mint=usdc)
+                if (event and event.side == "BUY" and event.token_mint == mint and event.quote_mint == SOL_MINT
+                        and (event.quote_amount or 0) >= min_buy):
+                    buyers.setdefault(payer, set()).add(mint)
+        followed = {t["address"] for t in self.db.list_traders()}
+        for wallet, seen in buyers.items():
+            if wallet in followed:
+                continue
+            candidate = self.db.get_candidate(wallet)
+            if candidate is None or candidate["status"] == "new":
+                previous = (candidate or {}).get("stats") or {}
+                self.db.upsert_candidate(wallet, score=None, status="new", reason=None, stats={
+                    "origin": "onchain", "seen": int(previous.get("seen") or 0) + len(seen),
+                    "seen_tokens": sorted(set(previous.get("seen_tokens") or []) | seen)[:10]}, evaluated_at=now)
+        self.db.heartbeat("hunter_scan", "OK", f"{len(buyers)} acheteurs sur {len(mints[: int(self.cfg['onchain_tokens'])])} tokens")
+        return len(buyers)
+
+    async def evaluate_onchain(self, address: str, now: datetime) -> tuple[float | None, str | None]:
+        agents = self.settings["agents"]
+        judge = self.settings["judge"]
+        limit = int(agents["head_max_transactions"])
+        signatures = [s for s in await self.rpc.get_signatures_for_address(address, limit=limit)
+                      if s.get("err") is None]
+        times = [int(s["blockTime"]) for s in signatures if s.get("blockTime")]
+        last = max(times) if times else None
+        span_days = (max(times) - min(times)) / 86400 if len(times) > 1 else 0.0
+        reason = None
+        if len(signatures) < 2 * int(judge["min_trader_closed_trades"]):
+            reason = f"pas assez de transactions ({len(signatures)})"
+        elif len(signatures) >= limit and span_days < float(judge["min_trader_history_days"]):
+            reason = (f"trop actif : {len(signatures)} transactions en {span_days:.1f} j "
+                      f"(impossible de vérifier {judge['min_trader_history_days']} j d'historique)")
+        elif last is not None and now.timestamp() - last > 86400:
+            reason = "aucun trade depuis 24 h"
+        previous = (self.db.get_candidate(address) or {}).get("stats") or {}
+        base = {"origin": "onchain", "seen": previous.get("seen"), "seen_tokens": previous.get("seen_tokens"),
+                "last_trade_at": last, "transactions": len(signatures), "span_days": round(span_days, 1)}
+        if reason:
+            self.db.upsert_candidate(address, score=0.0, status="excluded", reason=reason,
+                                     stats={**base, "evaluated_at": now.isoformat()}, evaluated_at=now)
+            return 0.0, reason
+        report = await HeadAgent(self.rpc, self.db, self.settings,
+                                 usdc_mint=self.settings["tokens"]["usdc_mint"]).evaluate(address)
+        payload = {**dict(report.data or {}), **base, "evaluated_at": now.isoformat()}
+        score = _f(payload.get("score"))
+        if report.status == UNAVAILABLE or score is None:
+            reason = f"évaluation impossible : {report.summary}"
+        elif score < float(judge["min_trader_score"]):
+            reason = (report.reasons or [f"note {score:.0f}"])[0]
+        elif payload.get("avg_win_pct") is None:
+            reason = "gain moyen inconnu"
+        self.db.upsert_candidate(address, score=score, status="excluded" if reason else "ok", reason=reason,
+                                 stats=payload, evaluated_at=now)
+        if any(t["address"] == address for t in self.db.list_traders()):
+            self.db.update_trader_score(address, score, payload)
+        return score, reason
+
+    async def _cycle_onchain(self, now: datetime) -> AgentReport:
+        self.db.release_dropped_candidates(now - timedelta(hours=float(self.cfg["cooldown_hours"])))
+        row = self.db.query_one("SELECT at FROM heartbeats WHERE component = 'hunter_scan'")
+        found = None
+        if row is None or (now - datetime.fromisoformat(row["at"])).total_seconds() >= float(
+                self.cfg["scan_minutes"]) * 60:
+            found = await self.scan_onchain(now)
+        ttl = float(self.settings["agents"]["head_cache_hours"]) * 60
+        followed = [t["address"] for t in self.db.list_traders(active_only=True) if t.get("source") == SOURCE_AUTO]
+        fresh = [c for c in self.db.list_candidates(500) if c["status"] == "new"]
+        fresh.sort(key=lambda c: int((c["stats"] or {}).get("seen") or 0), reverse=True)
+        queue = [a for a in followed if self._needs_eval(a, now, ttl)] + [c["address"] for c in fresh]
+        evaluated = []
+        for address in queue[: int(self.cfg["onchain_evals_per_cycle"])]:
+            try:
+                score, reason = await self.evaluate_onchain(address, now)
+            except Exception as exc:  # noqa: BLE001
+                score, reason = None, redact(f"{type(exc).__name__}: {exc}")
+            evaluated.append((address, score, reason))
+        changes = self.rotate(now)
+        roster = self.db.list_traders(active_only=True)
+        waiting = len([c for c in self.db.list_candidates(500) if c["status"] == "new"])
+        summary = (f"Blockchain : {len(roster)}/{self.target} traders copiés, {waiting} candidat(s) en attente "
+                   f"de vérification")
+        if found is not None:
+            summary += f", {found} acheteurs repérés sur les tokens actifs"
+        if changes:
+            summary += " — " + "; ".join(changes[:3])
+        status = OK if len(roster) >= self.target else WARN
+        reasons = changes + ([] if status == OK else [
+            "la recherche continue : chaque candidat est vérifié sur son historique complet (1 à 2 min chacun)"])
+        return AgentReport(self.name, None, status, summary, reasons,
+                           {"source": "onchain", "discovered": found,
+                            "evaluated": [{"address": a, "score": s, "reason": r} for a, s, r in evaluated],
+                            "roster": [t["address"] for t in roster], "changes": changes}, 1.0)
 
     async def _cycle(self, now: datetime) -> AgentReport:
         self.db.release_dropped_candidates(now - timedelta(hours=float(self.cfg["cooldown_hours"])))

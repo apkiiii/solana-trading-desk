@@ -167,7 +167,8 @@ def test_start_stop_wallet_and_real_account(db, isolated):
         return engines[-1]
 
     async def scenario(client, desk):
-        # sans trader : DÉMARRER refusé avec une explication
+        # sans trader et sans recherche automatique : DÉMARRER refusé avec une explication
+        await client.post("/api/settings", json={"section": "discovery", "key": "enabled", "value": False})
         r = await client.post("/api/bot", json={"action": "start"})
         assert r.status == 409 and "trader" in (await r.json())["error"]
         await client.post("/api/traders", json={"address": WALLET})
@@ -220,14 +221,15 @@ def test_restart_never_resumes_trading_or_real_account(db, isolated):
     run_with_client(db, scenario)
 
 
-def test_start_without_helius_key_explains_what_to_do(db, isolated):
-    async def scenario(client, _desk):
-        await client.post("/api/traders", json={"address": WALLET})
-        r = await client.post("/api/bot", json={"action": "start"})
-        assert r.status == 409 and "Helius" in (await r.json())["error"]
-        assert (await (await client.get("/api/state")).json())["bot_state"] == "STOPPED"
+def test_start_without_any_key_uses_the_public_rpc(db, isolated):
+    async def scenario(client, desk):
+        r = await client.post("/api/bot", json={"action": "start"})   # aucun trader, aucune clé
+        assert r.status == 200
+        assert desk.engine_providers is not None and desk.engine_providers.keyless_rpc
+        state = await (await client.get("/api/state")).json()
+        assert state["bot_state"] == "RUNNING" and state["rpc"] == "public"
 
-    run_with_client(db, scenario)
+    run_with_client(db, scenario, engine_factory=lambda _p: FakeEngine())
 
 
 def test_hunter_lets_the_bot_start_without_manual_traders(db, isolated, monkeypatch):
@@ -240,10 +242,7 @@ def test_hunter_lets_the_bot_start_without_manual_traders(db, isolated, monkeypa
     async def scenario(client, _desk):
         status = await (await client.get("/api/hunter")).json()
         assert status["gmgn_key"] is False and status["settings"]["target_traders"] == 5
-        run = await (await client.post("/api/hunter/run", json={})).json()
-        assert run["status"] == "UNAVAILABLE" and "GMGN" in run["summary"]
-        r = await client.post("/api/bot", json={"action": "start"})
-        assert r.status == 409 and "GMGN" in (await r.json())["error"]
+        assert status["source"] == "onchain"
         monkeypatch.setenv("GMGN_API_KEY", "cle-de-test")
         r = await client.post("/api/bot", json={"action": "start"})
         assert r.status == 200

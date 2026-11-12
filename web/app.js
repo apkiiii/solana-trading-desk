@@ -336,8 +336,8 @@ async function saveSetting(section, key, el) {
 
 /* ================================================================ clés + diagnostic */
 const KEYS = [
-  ["HELIUS_API_KEY", "Helius", "Obligatoire — lecture de la blockchain en temps réel", "https://dashboard.helius.dev"],
-  ["GMGN_API_KEY", "GMGN", "Recherche automatique des meilleurs traders (lecture seule, gratuite) — voir « Clé GMGN » plus bas", "https://gmgn.ai/ai"],
+  ["HELIUS_API_KEY", "Helius", "Conseillée (gratuite) — détection plus rapide des trades. Sans elle, le bot utilise le RPC public de Solana, gratuit mais plus lent", "https://dashboard.helius.dev"],
+  ["GMGN_API_KEY", "GMGN", "Facultative — accélère la recherche des traders (sinon : blockchain, sans clé). Voir « Clé GMGN » plus bas", "https://gmgn.ai/ai"],
   ["JUPITER_API_KEY", "Jupiter", "Optionnelle (gratuite) — devis plus rapides : conseillée pour le compte réel", "https://portal.jup.ag"],
   ["RUGCHECK_API_KEY", "RugCheck", "Optionnelle — rapports de risque plus frais", "https://rugcheck.xyz"],
 ];
@@ -345,7 +345,7 @@ const KEYS = [
 async function loadKeys(target = "#keys") {
   const k = (await api("/api/keys")).keys;
   $(target).innerHTML = KEYS.map(([name, title, help, url]) => `<div class="setting" style="grid-template-columns:1fr 1.2fr">
-    <div><b>${title} <span class="chip ${k[name].set ? "ok" : name === "HELIUS_API_KEY" ? "bad" : ""}" style="padding:1px 8px;font-size:10.5px">${k[name].set ? "configurée" : "absente"}</span></b><span>${esc(help)} — <a href="${url}" target="_blank" rel="noopener">obtenir une clé</a></span></div>
+    <div><b>${title} <span class="chip ${k[name].set ? "ok" : ""}" style="padding:1px 8px;font-size:10.5px">${k[name].set ? "configurée" : "absente"}</span></b><span>${esc(help)} — <a href="${url}" target="_blank" rel="noopener">obtenir une clé</a></span></div>
     <input class="input mono" type="password" autocomplete="off" data-key="${name}" placeholder="${k[name].set ? esc(k[name].masked) : "Coller la clé"}"></div>`).join("")
     + `<div class="row" style="margin-top:12px"><span class="spacer"></span><button class="btn gold" data-savekeys>Enregistrer les clés</button></div>`;
   $(`${target} [data-savekeys]`).onclick = (e) => busy(e.currentTarget, "Enregistrement…", async () => {
@@ -392,29 +392,31 @@ async function loadHunter() {
   const h = await api("/api/hunter");
   const c = h.settings;
   const chip = $("#h-chip");
-  if (!h.gmgn_key) { chip.className = "chip warn"; chip.innerHTML = "<i></i>clé GMGN à ajouter"; }
+  const srcName = h.source === "gmgn" ? "GMGN" : h.source === "onchain" ? "blockchain, sans clé" : "aucune source";
+  if (!h.source) { chip.className = "chip warn"; chip.innerHTML = "<i></i>aucune source"; }
   else if (!c.enabled) { chip.className = "chip"; chip.innerHTML = "<i></i>désactivée"; }
-  else if (h.running) { chip.className = "chip ok"; chip.innerHTML = `<i></i>active — toutes les ${num(c.interval_minutes)} min`; }
-  else { chip.className = "chip"; chip.innerHTML = "<i></i>démarre avec le bot"; }
+  else if (h.running) { chip.className = "chip ok"; chip.innerHTML = `<i></i>active (${srcName}) — toutes les ${num(c.interval_minutes)} min`; }
+  else { chip.className = "chip"; chip.innerHTML = `<i></i>${srcName} — démarre avec le bot`; }
   const last = h.last;
-  const cands = h.candidates.filter((x) => x.status !== "new");
-  const statusText = {ok: ["ok", "retenu"], excluded: ["bad", "exclu"], dropped: ["warn", "écarté"], new: ["", "à évaluer"]};
+  const cands = h.candidates;
+  const statusText = {ok: ["ok", "retenu"], excluded: ["bad", "exclu"], dropped: ["warn", "écarté"], new: ["", "à vérifier"]};
   $("#hunter").innerHTML = `
-    ${h.gmgn_key ? "" : `<div class="banner" style="margin:0 0 12px"><b>Clé GMGN requise</b><span>Elle est gratuite : menu <a href="#connections">Connexions</a> → « Clé GMGN ». Sans elle, ajoute tes traders à la main.</span></div>`}
-    <p class="muted" style="margin-top:0">HUNTER parcourt les listes « smart money » et « KOL » de GMGN, note chaque trader (réussite, rendement, gains réels de ses dernières ventes, pertes lourdes) et écarte les robots, les créateurs de tokens et ceux qui revendent trop vite pour être copiés. Toutes les ${num(c.interval_minutes)} min, il <b>retire les traders non concluants</b> (note en baisse, inactifs depuis ${num(c.max_idle_minutes)} min, ou copies perdantes de ${eur(c.max_copied_loss_eur)}) et les remplace par les meilleurs candidats. Il ne fait qu'<b>choisir qui suivre</b> : chaque achat passe toujours par le JUDGE.</p>
+    ${h.source === "onchain" ? `<p style="margin-top:0"><b>Recherche sur la blockchain, sans aucune clé.</b> HUNTER prend les tokens les plus actifs de Jupiter (activité réelle), repère les wallets qui viennent de les acheter, puis vérifie <b>l'historique complet</b> de chacun (au moins ${num(30)} trades sur 14 jours, réussite, gains, pertes) avant de le copier. C'est gratuit mais plus lent : environ 1 à 2 min par candidat. Une clé GMGN (facultative, menu <a href="#connections">Connexions</a>) accélère la recherche.</p>`
+      : `<p style="margin-top:0"><b>Recherche via GMGN.</b> HUNTER parcourt les listes « smart money » et « KOL » et note chaque trader (réussite, rendement, gains réels de ses dernières ventes, pertes lourdes).</p>`}
+    <p class="muted" style="margin-top:0">Il écarte les robots, les créateurs de tokens et ceux qui revendent trop vite pour être copiés. Toutes les ${num(c.interval_minutes)} min, il <b>retire les traders non concluants</b> (note en baisse, inactifs depuis ${num(c.max_idle_minutes)} min, ou copies perdantes de ${eur(c.max_copied_loss_eur)}) et les remplace par les meilleurs candidats. Il ne fait qu'<b>choisir qui suivre</b> : chaque achat passe toujours par le JUDGE.</p>
     <div class="grid g4" style="margin:12px 0">
       <div class="setting" style="grid-template-columns:1fr"><div><b>Recherche</b></div><select data-h="enabled"><option value="true" ${c.enabled ? "selected" : ""}>Activée</option><option value="false" ${!c.enabled ? "selected" : ""}>Désactivée</option></select></div>
       <div class="setting" style="grid-template-columns:1fr"><div><b>Traders copiés</b><span>maximum ${h.max_traders}</span></div><input class="input mono" type="number" min="1" max="${h.max_traders}" data-h="target_traders" value="${c.target_traders}"></div>
       <div class="setting" style="grid-template-columns:1fr"><div><b>Vérification toutes les</b><span>minutes</span></div><input class="input mono" type="number" min="1" step="1" data-h="interval_minutes" value="${c.interval_minutes}"></div>
       <div class="setting" style="grid-template-columns:1fr"><div><b>Période analysée</b></div><select data-h="period"><option value="7d" ${c.period === "7d" ? "selected" : ""}>7 jours</option><option value="30d" ${c.period === "30d" ? "selected" : ""}>30 jours</option></select></div>
     </div>
-    <div class="row"><span class="muted">${h.followed} trader(s) suivi(s) dont ${h.auto} trouvé(s) par HUNTER${last ? ` · dernier passage ${ago(last.created_at)} : ${esc(last.summary)}` : ""}</span><span class="spacer"></span><button class="btn gold" id="h-run" ${h.gmgn_key ? "" : "disabled"}>Chercher maintenant</button></div>
-    ${cands.length ? `<table style="margin-top:12px"><thead><tr><th>Note</th><th>Trader</th><th>Réussite</th><th>Rendement</th><th>Gain moyen</th><th>Tokens</th><th>Statut</th></tr></thead><tbody>${cands.slice(0, 15).map((x) => {
+    <div class="row"><span class="muted">${h.followed} trader(s) suivi(s) dont ${h.auto} trouvé(s) par HUNTER${last ? ` · dernier passage ${ago(last.created_at)} : ${esc(last.summary)}` : ""}</span><span class="spacer"></span><button class="btn gold" id="h-run" ${h.source ? "" : "disabled"}>Chercher maintenant</button></div>
+    ${cands.length ? `<table style="margin-top:12px"><thead><tr><th>Note</th><th>Trader</th><th>Réussite</th><th>Rendement</th><th>Gain moyen</th><th>Trades</th><th>Statut</th></tr></thead><tbody>${cands.slice(0, 15).map((x) => {
       const st = x.stats || {};
       const s2 = x.followed ? ["ok", "copié"] : x.status === "ok" ? ["", "en réserve"] : (statusText[x.status] || ["", x.status]);
-      return `<tr><td class="mono"><b>${x.score == null ? "—" : num(x.score)}</b></td><td><div class="addr">${short(x.address)}${st.name ? ` <span class="muted">@${esc(st.name)}</span>` : ""}</div></td>
+      return `<tr><td class="mono"><b>${x.score == null ? "—" : num(x.score)}</b></td><td><div class="addr">${short(x.address)}${st.name ? ` <span class="muted">@${esc(st.name)}</span>` : ""}</div>${st.seen_tokens && x.status === "new" ? `<div class="dim" style="font-size:11px">a acheté ${st.seen_tokens.length} token(s) actif(s)</div>` : ""}</td>
         <td class="mono">${st.win_rate == null ? "—" : num(st.win_rate * 100) + " %"}</td><td class="mono ${st.roi_pct > 0 ? "pos" : st.roi_pct < 0 ? "neg" : ""}">${st.roi_pct == null ? "—" : num(st.roi_pct) + " %"}</td>
-        <td class="mono">${st.avg_win_pct == null ? "—" : "+" + num(st.avg_win_pct) + " %"}</td><td class="mono">${st.token_num ?? "—"}</td>
+        <td class="mono">${st.avg_win_pct == null ? "—" : "+" + num(st.avg_win_pct) + " %"}</td><td class="mono">${st.token_num ?? st.closed_trades ?? "—"}</td>
         <td><span class="chip ${s2[0]}" style="padding:2px 8px">${s2[1]}</span>${x.reason ? `<div class="dim" style="font-size:11px;margin-top:3px">${esc(x.reason)}</div>` : ""}</td></tr>`;
     }).join("")}</tbody></table>` : `<div class="empty" style="margin-top:12px">Aucun candidat évalué pour l'instant.</div>`}`;
   $$("[data-h]").forEach((el) => el.onchange = async () => {
@@ -446,7 +448,7 @@ async function loadGmgnKey() {
     ? `<p class="muted" style="margin-top:0">Elle permet à HUNTER de lire les classements de GMGN. Elle ne donne <b>aucun accès</b> à ton wallet ; sa partie secrète reste dans le coffre-fort de Windows.</p>
        <textarea class="input mono" rows="4" readonly id="gk-pem" style="font-size:12px">${esc(k.public_pem)}</textarea>
        <div class="row" style="margin-top:10px"><button class="btn gold" id="gk-copy">Copier la clé publique</button><span class="spacer"></span><button class="btn ghost sm" id="gk-replace">Remplacer la clé</button></div>${steps}`
-    : `<p class="muted" style="margin-top:0">GMGN demande une clé publique pour te donner une clé API gratuite. Le logiciel la crée sur ce PC ; elle ne donne <b>aucun accès</b> à ton wallet.</p>
+    : `<p class="muted" style="margin-top:0"><b>Facultatif</b> : sans clé GMGN, HUNTER cherche directement sur la blockchain. GMGN demande une clé publique pour te donner une clé API gratuite. Le logiciel la crée sur ce PC ; elle ne donne <b>aucun accès</b> à ton wallet.</p>
        <button class="btn gold" id="gk-create">Créer ma clé GMGN</button>${steps}`;
   const create = async (replace) => { await api("/api/gmgn/key", {replace}); toast("Clé créée. Copie la clé publique sur gmgn.ai/ai.", "ok"); loadGmgnKey(); };
   if ($("#gk-create")) $("#gk-create").onclick = (e) => busy(e.currentTarget, "Création…", () => create(false));
@@ -528,9 +530,9 @@ let wzStep = 0;
 const WZ = [
   () => `<h2>Bienvenue dans ton Trading Desk</h2><p>En 3 étapes, le logiciel sera prêt. Tu commences en <b>compte démo</b> : argent fictif, marché réel, aucun risque.</p>
     <div class="grid g3" style="margin-top:16px"><div class="panel panel-b"><b>Les agents</b><p class="muted" style="margin:6px 0 0">surveillent tes traders et vérifient chaque token.</p></div><div class="panel panel-b"><b>Le JUDGE</b><p class="muted" style="margin:6px 0 0">autorise ou refuse chaque achat selon des règles fixes.</p></div><div class="panel panel-b"><b>Toi</b><p class="muted" style="margin:6px 0 0">choisis un profil, et c'est tout.</p></div></div>`,
-  () => `<h2>1. Tes clés de connexion</h2><p>Helius est obligatoire (gratuit) : il permet de voir les trades de tes traders en temps réel. GMGN (gratuit) permet au bot de trouver lui-même les meilleurs traders. Les clés restent sur ce PC.</p><div id="wz-keys"></div>`,
+  () => `<h2>1. Tes clés de connexion</h2><p>Aucune clé n'est obligatoire : sans clé, le bot lit la blockchain par le RPC public de Solana (gratuit, plus lent). Une clé Helius gratuite rend la détection des trades plus rapide. Les clés restent sur ce PC.</p><div id="wz-keys"></div>`,
   () => `<h2>2. Ton profil de risque</h2><p>Tu pourras le changer à tout moment dans Réglages.</p><div class="profiles" id="wz-profiles" style="grid-template-columns:1fr"></div>`,
-  () => `<h2>3. Les traders à copier</h2><p>Avec ta clé GMGN, l'agent HUNTER trouve lui-même les 5 meilleurs traders et remplace ceux qui ne sont pas concluants. Tu peux aussi en ajouter un à la main :</p>
+  () => `<h2>3. Les traders à copier</h2><p>L'agent HUNTER trouve lui-même les 5 meilleurs traders (sans clé) et remplace ceux qui ne sont pas concluants. Tu peux aussi en ajouter un à la main :</p>
     <div class="row" style="margin-top:12px"><input class="input mono" id="wz-addr" placeholder="Adresse publique (facultatif)" style="flex:1"><button class="btn" id="wz-add">Ajouter</button></div>
     <p class="dim" style="font-size:12.5px">Ensuite : <b>▶ Démarrer</b> (compte démo) — HUNTER choisit les traders, le JUDGE vérifie chaque achat. Le compte réel se branche plus tard, avec un compte Phantom dédié au bot (menu Connexions).</p>`,
 ];

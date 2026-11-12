@@ -25,7 +25,7 @@ from core.version import RELEASE_NAME, __version__
 from data.database import Database, DatabaseError
 from engine.scheduler import entries_window_open, next_change
 from agents.hunter import HunterAgent
-from data.providers.factory import build_gmgn, build_providers
+from data.providers.factory import build_providers
 from engine.copy_trading import CopyTradingEngine
 from security.gmgn_keys import GmgnKeyError, GmgnKeyStore
 from security.secrets import SecretsError, load_secrets, mask, save_api_keys
@@ -265,6 +265,7 @@ class DeskServer:
             "credits": {"used": self.db.month_credits("helius"),
                         "budget": settings["providers"]["helius"]["monthly_credit_budget"]},
             "venue": settings["execution"]["venue"], "profile": detect_profile(settings),
+            "rpc": "helius" if secrets and (secrets.helius_api_key or secrets.rpc_url_override) else "public",
             "keys": {"ok": secrets_ok, "helius": bool(secrets and (secrets.helius_api_key or secrets.rpc_url_override)),
                      "jupiter": bool(secrets and secrets.jupiter_api_key),
                      "gmgn": bool(secrets and secrets.gmgn_api_key)},
@@ -429,12 +430,12 @@ class DeskServer:
             if control["emergency_stop"] or EMERGENCY_STOP_FILE.exists():
                 return _error("ARRÊT D'URGENCE actif : lève-le d'abord.", 409)
             if not self.db.list_traders(active_only=True) and not self._hunter_ready():
-                return _error("Aucun trader à copier : ajoute ta clé API GMGN (gratuite, menu Connexions) pour que "
-                              "le bot trouve lui-même les meilleurs traders, ou ajoute un trader à la main.", 409)
+                return _error("Aucun trader à copier : active la recherche automatique (menu Traders) ou ajoute un "
+                              "trader à la main.", 409)
             try:
                 await self.start_engine()
-            except SecretsError:
-                return _error("Clé Helius manquante : ajoute-la dans Connexions (gratuite sur helius.dev).", 409)
+            except SecretsError as exc:
+                return _error(f"Problème avec les clés enregistrées : {exc}", 409)
             if control["mode"] == "SIMULATION":
                 self.db.set_control(actor="dashboard", mode="PAPER")
             self.db.set_control(actor="dashboard", bot_state="RUNNING", manual_stop=False)
@@ -449,11 +450,15 @@ class DeskServer:
 
     # ---------------------------------------------------------------- HUNTER
     def _hunter_ready(self) -> bool:
-        try:
-            has_key = bool(load_secrets().gmgn_api_key)
-        except SecretsError:
-            has_key = False
-        return has_key and bool(load_settings(self.db)["discovery"]["enabled"])
+        return bool(load_settings(self.db)["discovery"]["enabled"])
+
+    def _hunter_source(self, settings: Any, has_gmgn_key: bool) -> str | None:
+        wanted = settings["discovery"].get("source", "auto")
+        if wanted == "gmgn":
+            return "gmgn" if has_gmgn_key else None
+        if wanted == "onchain":
+            return "onchain"
+        return "gmgn" if has_gmgn_key else "onchain"
 
     async def hunter_status(self, _request: web.Request) -> web.Response:
         settings = load_settings(self.db)
@@ -463,9 +468,11 @@ class DeskServer:
             has_key = False
         last = self.db.latest_agent_reports("HUNTER", 1)
         traders = self.db.list_traders(active_only=True)
-        return _json({"gmgn_key": has_key, "settings": dict(settings["discovery"]),
-                      "max_traders": settings["capital"]["max_traders"],
-                      "running": self.engine_running and bool(settings["discovery"]["enabled"]) and has_key,
+        source = self._hunter_source(settings, has_key)
+        scan = self.db.query_one("SELECT at, detail FROM heartbeats WHERE component = 'hunter_scan'")
+        return _json({"gmgn_key": has_key, "settings": dict(settings["discovery"]), "source": source,
+                      "max_traders": settings["capital"]["max_traders"], "last_scan": scan,
+                      "running": self.engine_running and bool(settings["discovery"]["enabled"]) and source is not None,
                       "last": last[0] if last else None, "followed": len(traders),
                       "auto": sum(1 for t in traders if t.get("source") == "auto"),
                       "candidates": [{**c, "followed": c["address"] in {t["address"] for t in traders}}
@@ -476,21 +483,14 @@ class DeskServer:
             report = await self.engine.hunt()
         else:
             settings = load_settings(self.db)
-            secrets = load_secrets()
-            gmgn = build_gmgn(settings, secrets, self.db)
-            jupiter = providers = None
-            if gmgn is not None:
-                try:
-                    providers = self.providers_factory()
-                    jupiter = getattr(providers, "jupiter", None)  # prix du SOL (facultatif)
-                except SecretsError:
-                    providers = None
+            providers = self.providers_factory()
             try:
-                report = await HunterAgent(gmgn, self.db, settings, jupiter=jupiter).cycle()
+                report = await HunterAgent(
+                    getattr(providers, "gmgn", None), self.db, settings, jupiter=getattr(providers, "jupiter", None),
+                    rpc=getattr(providers, "public_rpc", None) or getattr(providers, "rpc", None),
+                    dex=getattr(providers, "dex", None)).cycle()
             finally:
-                if gmgn is not None:
-                    await gmgn.aclose()
-                if providers is not None and hasattr(providers, "aclose"):
+                if hasattr(providers, "aclose"):
                     await providers.aclose()
             from agents.base import save_report
             save_report(self.db, report)

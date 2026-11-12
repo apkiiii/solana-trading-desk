@@ -118,3 +118,11 @@ class JupiterClient(HttpProvider):
         return {"status": data.get("status"), "signature": data.get("signature"), "code": _int(data.get("code")),
                 "input_amount": _int(data.get("inputAmountResult")),
                 "output_amount": _int(data.get("outputAmountResult")), "error": data.get("error")}
+
+    async def top_tokens(self, category: str = "toporganicscore", interval: str = "1h",
+                         limit: int = 20) -> list[dict[str, Any]]:
+        """Tokens les plus actifs (Tokens API V2) : toporganicscore, toptraded ou toptrending."""
+        data = await self._request("GET", f"/tokens/v2/{category}/{interval}", params={"limit": str(limit)})
+        if not isinstance(data, list):
+            raise ProviderError(self.name, "réponse de tokens inattendue")
+        return [t for t in data if isinstance(t, dict) and t.get("id")]
