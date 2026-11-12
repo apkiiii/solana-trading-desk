@@ -78,6 +78,8 @@ class HttpProvider:
                     header = response.headers.get("retry-after")
                     if header and header.replace(".", "", 1).isdigit():
                         retry_after = min(float(header), 30.0)
+                    if status == 429 and hasattr(self._limiter, "penalize"):
+                        self._limiter.penalize(retry_after or 1.0)
                     last_error = ProviderError(self.name, f"HTTP {status} sur {path or '/'}", status=status,
                                                retryable=True)
                 elif status >= 400:
@@ -86,6 +88,8 @@ class HttpProvider:
                     raise ProviderError(self.name, f"HTTP {status} sur {path or '/'} : {body}", status=status)
                 else:
                     self._record(1, credits, 0)
+                    if hasattr(self._limiter, "reward"):
+                        self._limiter.reward()
                     try:
                         return response.json()
                     except ValueError as exc:

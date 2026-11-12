@@ -12,7 +12,7 @@ from data.providers.dexscreener import DexScreenerClient
 from data.providers.jupiter import JupiterClient
 from data.providers.rugcheck import RugCheckClient
 from data.providers.solana_rpc import SolanaRpcClient
-from data.rate_limiter import AsyncRateLimiter
+from data.rate_limiter import AsyncRateLimiter, CombinedLimiter
 from security.secrets import ApiSecrets
 
 
@@ -73,12 +73,15 @@ def build_providers(settings: Settings, secrets: ApiSecrets, db: Database | None
         client.name = "solana-public"
         return client
 
+    # Une seule limite commune pour TOUTES les requêtes Helius (surveillance + recherche), adaptative.
+    helius_limit = AsyncRateLimiter(float(helius.get("total_requests_per_second", 8.0)), burst=2)
     if keyless:
         rpc = public_client()
     else:
         rpc = SolanaRpcClient(
             rpc_url,
-            limiter=AsyncRateLimiter(float(helius["requests_per_second"]), burst=4),
+            limiter=helius_limit if not secrets.rpc_url_override
+            else AsyncRateLimiter(float(helius["requests_per_second"]), burst=4),
             max_transaction_version=int(helius.get("max_transaction_version", 0)),
             credit_budget=int(helius["monthly_credit_budget"]) if not secrets.rpc_url_override else None,
             credits_used=(lambda: db.month_credits("helius") + db.month_credits("helius-hunter"))
@@ -92,7 +95,8 @@ def build_providers(settings: Settings, secrets: ApiSecrets, db: Database | None
         if daily > 0:
             hunter_rpc = SolanaRpcClient(
                 helius["rpc_url"].format(key=secrets.helius_api_key),
-                limiter=AsyncRateLimiter(float(helius.get("hunter_requests_per_second", 4.0)), burst=4),
+                limiter=CombinedLimiter(helius_limit,
+                                        AsyncRateLimiter(float(helius.get("hunter_requests_per_second", 2.5)), burst=1)),
                 max_transaction_version=int(helius.get("max_transaction_version", 0)),
                 credit_budget=daily, credits_used=(lambda: db.day_credits("helius-hunter")) if db is not None else None,
                 **common)
