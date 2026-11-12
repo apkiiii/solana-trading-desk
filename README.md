@@ -64,8 +64,9 @@ py -3.12 -m venv .venv
 powershell -ExecutionPolicy Bypass -File packaging\build_exe.ps1   # fabriquer l'installateur
 ```
 
-Publier une version : modifier `core/version.py`, ajouter `packaging/release-notes/<version>.md`,
-puis pousser une étiquette `v<version>` ; GitHub Actions teste, fabrique et publie l'installateur.
+Publier une version : ajouter `packaging/release-notes/<version>.md` puis modifier le numéro dans
+`core/version.py` et pousser sur `main` ; GitHub Actions teste, fabrique et publie l'installateur
+(étiquette `v<version>` créée automatiquement). Relance possible depuis l'onglet Actions.
 
 ```
 app/        application de bureau (PySide6)
