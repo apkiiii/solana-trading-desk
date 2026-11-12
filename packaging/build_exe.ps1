@@ -15,6 +15,7 @@ python -m PyInstaller --noconfirm --clean --windowed `
     --add-data "web;web" `
     --collect-submodules keyring `
     --collect-data tzdata `
+    --collect-data certifi `
     --exclude-module tests `
     --exclude-module pytest `
     --exclude-module numpy `

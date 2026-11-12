@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ssl
 import logging
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable
@@ -26,6 +27,18 @@ from data.models import SignatureNotice
 log = logging.getLogger(__name__)
 
 NoticeHandler = Callable[[SignatureNotice], Awaitable[None]]
+
+
+def secure_context() -> ssl.SSLContext:
+    """Certificats racines à jour fournis avec le logiciel (certifi), comme pour les requêtes HTTP.
+
+    Constaté sur un PC Windows : la liste de certificats du système n'était pas à jour
+    (« certificate has expired ») et la connexion en direct à Helius échouait."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:  # noqa: BLE001
+        return ssl.create_default_context()
 
 
 class WalletMonitor:
@@ -49,6 +62,9 @@ class WalletMonitor:
         self.connections = 0
         self.last_message_at: datetime | None = None
         self.last_error: str | None = None
+        self.fallback: Any = None          # PollingMonitor de secours (facultatif)
+        self.fallback_after = 3            # échecs de connexion consécutifs avant de basculer
+        self.using_fallback = False
 
     # --------------------------------------------------------------- public
     @property
@@ -58,6 +74,8 @@ class WalletMonitor:
     def set_wallets(self, wallets: Iterable[str]) -> None:
         """Change la liste des wallets suivis (reconnexion immédiate)."""
         new = list(dict.fromkeys(wallets))
+        if self.fallback is not None:
+            self.fallback.set_wallets(new)
         if new != self._wallets:
             self._wallets = new
             self._resubscribe.set()
@@ -67,26 +85,40 @@ class WalletMonitor:
         self._last_signature.update(last)
 
     def status(self) -> dict[str, Any]:
+        if self.using_fallback and self.fallback is not None:
+            status = self.fallback.status()
+            status["mode"] = "secours : " + str(status.get("mode", "interrogation"))
+            status["live_error"] = self.last_error
+            return status
         return {"connected": self.connected, "connections": self.connections, "wallets": len(self._wallets),
                 "last_message_at": self.last_message_at.isoformat() if self.last_message_at else None,
-                "last_error": self.last_error}
+                "last_error": self.last_error, "mode": "direct"}
 
     async def run(self, stop: asyncio.Event) -> None:
         backoff = 1.0
+        failures = 0
         while not stop.is_set():
+            if self.fallback is not None and failures >= self.fallback_after:
+                log.warning("Connexion en direct impossible (%s) : bascule sur l'interrogation.", self.last_error)
+                self.using_fallback = True
+                self.fallback.seed_last_signatures(self._last_signature)
+                await self.fallback.run(stop)
+                return
             if not self._wallets:
                 self.connected = False
                 await self._wait_any(stop, self._resubscribe, timeout=5.0)
                 self._resubscribe.clear()
                 continue
             try:
+                extra = {"ssl": secure_context()} if self._url.startswith("wss://") and self._connect is ws_connect else {}
                 async with self._connect(self._url, ping_interval=self._ping_interval, ping_timeout=20,
-                                         open_timeout=10, max_size=4 * 1024 * 1024) as ws:
+                                         open_timeout=10, max_size=4 * 1024 * 1024, **extra) as ws:
                     self.connections += 1
                     await self._subscribe(ws)
                     self.connected = True
                     self.last_error = None
                     backoff = 1.0
+                    failures = 0
                     log.info("Surveillance active sur %d wallet(s).", len(self._wallets))
                     if self.connections > 1 or self._last_signature:
                         await self._backfill()
@@ -94,6 +126,7 @@ class WalletMonitor:
             except (ConnectionClosed, OSError, InvalidHandshake, InvalidURI, asyncio.TimeoutError,
                     RuntimeError, ValueError) as exc:
                 self.last_error = redact(f"{type(exc).__name__}: {exc}")
+                failures += 1
                 log.warning("WebSocket interrompu (%s). Reconnexion dans %.0f s.", self.last_error, backoff)
             finally:
                 self.connected = False

@@ -480,6 +480,12 @@ class CopyTradingEngine:
                                           interval=interval)
         else:
             self.monitor = WalletMonitor(self.providers.ws_url, wallets, self._on_notice, rpc=self.providers.rpc)
+            public = getattr(self.providers, "public_rpc", None)
+            if public is not None:
+                # Secours : si la connexion en direct échoue, interrogation gratuite (sans consommer de crédits).
+                self.monitor.fallback = PollingMonitor("", wallets, self._on_notice, rpc=public,
+                                                       interval=float(self._settings()["providers"]["public_rpc"]
+                                                                      .get("poll_seconds", 4.0)))
         self.monitor.seed_last_signatures(self.db.last_signatures())
         self.started_at = self.clock()
         self.db.heartbeat("engine", "OK", "démarré")

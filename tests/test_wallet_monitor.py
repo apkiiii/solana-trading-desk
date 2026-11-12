@@ -80,3 +80,56 @@ def test_monitor_subscribes_dedupes_reconnects_and_backfills():
     assert monitor.connections == 2
     assert {call[0] for call in rpc.calls} == {WALLET, OTHER_WALLET}
     assert monitor.connected is False
+
+
+def test_secure_context_uses_bundled_root_certificates():
+    import ssl
+
+    from data.wallet_monitor import secure_context
+    ctx = secure_context()
+    assert isinstance(ctx, ssl.SSLContext) and ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.cert_store_stats()["x509_ca"] > 50      # liste certifi chargée
+
+
+def test_falls_back_to_polling_when_live_connection_keeps_failing():
+    import asyncio
+
+    from data.wallet_monitor import WalletMonitor
+
+    class Boom:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            raise OSError("certificate has expired")
+
+        async def __aexit__(self, *a):
+            return False
+
+    ran = {}
+
+    class Fallback:
+        def seed_last_signatures(self, last):
+            ran["seeded"] = True
+
+        def set_wallets(self, w):
+            pass
+
+        def status(self):
+            return {"connected": True, "mode": "interrogation"}
+
+        async def run(self, stop):
+            ran["fallback"] = True
+
+    async def noop(_n):
+        return None
+
+    async def go():
+        monitor = WalletMonitor("wss://x", ["W"], noop, connect=Boom, max_backoff=0.01)
+        monitor.fallback = Fallback()
+        await asyncio.wait_for(monitor.run(asyncio.Event()), 5)
+        return monitor
+
+    monitor = asyncio.run(go())
+    assert ran == {"seeded": True, "fallback": True}
+    assert monitor.status()["mode"].startswith("secours") and "expired" in monitor.status()["live_error"]
