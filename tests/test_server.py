@@ -23,10 +23,28 @@ def isolated(tmp_path, monkeypatch):
     return tmp_path
 
 
+class OfflineProviders:
+    """Fournisseurs simulés : comme sans clé (RPC public), mais sans aucun accès réseau."""
+    keyless_rpc = True
+
+    class rpc:  # noqa: N801
+        @staticmethod
+        async def get_mint_info(address):
+            return None
+
+        @staticmethod
+        async def get_balance(address):
+            return 0
+
+    async def aclose(self):
+        pass
+
+
 def run_with_client(db, scenario, keys=None, **kwargs):
     async def go():
         if "wallet" not in kwargs:
             kwargs["wallet"] = TradingWalletStore(Path(db.path).parent / "wallet", use_keyring=False)
+        kwargs.setdefault("providers_factory", OfflineProviders)  # aucun test n'utilise le vrai réseau
         desk = DeskServer(db, check_updates=False, gmgn_keys=keys, **kwargs)
         async with TestClient(TestServer(desk.app)) as client:
             return await scenario(client, desk)
