@@ -75,6 +75,8 @@ class CopyTradingEngine:
         self._head_running: set[str] = set()
         self._sell_retry_at: dict[int, datetime] = {}
         self._last_exit_status: dict[str, str] = {}
+        self._notice_times: dict[str, list[float]] = {}
+        self.dropped_notices = 0
         self._warned_live_positions = False
         self._last_eur_per_sol: float | None = None
 
@@ -388,8 +390,43 @@ class CopyTradingEngine:
             self.last_error = redact(f"{type(task.exception()).__name__}: {task.exception()}")
             log.error("Tâche du moteur en erreur : %s", self.last_error)
 
+    MAX_PENDING = 40              # au-delà, les transactions arrivent trop tard pour être copiées
+    MAX_NOTICES_PER_MINUTE = 60   # un vrai trader ne fait pas une transaction par seconde
+
     async def _on_notice(self, notice: SignatureNotice) -> None:
+        now = asyncio.get_running_loop().time()
+        times = [t for t in self._notice_times.get(notice.wallet, []) if now - t < 60] + [now]
+        self._notice_times[notice.wallet] = times
+        if len(times) > self.MAX_NOTICES_PER_MINUTE:
+            self._disable_flooding(notice.wallet, len(times))
+            return
+        if len(self._tasks) >= self.MAX_PENDING:
+            self.dropped_notices += 1  # trop tard de toute façon (le JUDGE refuse au-delà de 20 s)
+            return
         self._spawn(self.handle_notice(notice))
+
+    def _disable_flooding(self, wallet: str, count: int) -> None:
+        trader = next((t for t in self.db.list_traders(active_only=True) if t["address"] == wallet), None)
+        if trader is None:
+            return
+        self.db.set_trader_active(wallet, False)
+        if self.monitor is not None:
+            self.monitor.set_wallets([t["address"] for t in self.db.list_traders(active_only=True)])
+        self.db.add_alert("warning", f"{wallet[:4]}…{wallet[-4:]} désactivé : {count} transactions en 1 minute. "
+                                     "Ce n'est pas un trader copiable (adresse d'un token, d'un pool ou d'un robot).")
+
+    async def _remove_token_addresses(self) -> None:
+        """Un « trader » qui est en réalité l'adresse d'un token est désactivé (sinon chaque achat du token
+        réveillerait le bot)."""
+        for trader in self.db.list_traders(active_only=True):
+            try:
+                info = await self.providers.rpc.get_mint_info(trader["address"])
+            except Exception:  # noqa: BLE001 - compte qui n'est pas un token, ou RPC indisponible
+                continue
+            if info is not None:
+                self.db.set_trader_active(trader["address"], False)
+                self.db.add_alert("warning", f"{trader['address'][:4]}…{trader['address'][-4:]} est l'adresse d'un "
+                                             "TOKEN, pas d'un trader : retiré de la surveillance.")
 
     async def _exit_loop(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
@@ -428,10 +465,17 @@ class CopyTradingEngine:
 
     async def run(self, stop: asyncio.Event) -> None:
         """Fait tourner le moteur jusqu'à ``stop`` (surveillance, achats, sorties)."""
-        from data.wallet_monitor import WalletMonitor
-        factory = self.monitor_factory or WalletMonitor
+        from data.wallet_monitor import PollingMonitor, WalletMonitor
+        await self._remove_token_addresses()
         wallets = [t["address"] for t in self.db.list_traders(active_only=True)]
-        self.monitor = factory(self.providers.ws_url, wallets, self._on_notice, rpc=self.providers.rpc)
+        if self.monitor_factory is not None:
+            self.monitor = self.monitor_factory(self.providers.ws_url, wallets, self._on_notice, rpc=self.providers.rpc)
+        elif getattr(self.providers, "keyless_rpc", False):
+            interval = float(self._settings()["providers"]["public_rpc"].get("poll_seconds", 4.0))
+            self.monitor = PollingMonitor(self.providers.ws_url, wallets, self._on_notice, rpc=self.providers.rpc,
+                                          interval=interval)
+        else:
+            self.monitor = WalletMonitor(self.providers.ws_url, wallets, self._on_notice, rpc=self.providers.rpc)
         self.monitor.seed_last_signatures(self.db.last_signatures())
         self.started_at = self.clock()
         self.db.heartbeat("engine", "OK", "démarré")
@@ -447,4 +491,4 @@ class CopyTradingEngine:
         return {"started_at": self.started_at.isoformat() if self.started_at else None,
                 "live_armed": self.live_armed, "last_error": self.last_error,
                 "monitor": self.monitor.status() if self.monitor is not None else None,
-                "tasks": len(self._tasks)}
+                "tasks": len(self._tasks), "dropped_notices": self.dropped_notices}

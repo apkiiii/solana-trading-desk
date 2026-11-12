@@ -4,7 +4,7 @@ Deux sources possibles (réglage ``discovery.source``, « auto » par défaut) :
 
 A. **Blockchain, sans aucune clé** (utilisée si aucune clé GMGN n'est enregistrée) —
    1. Jupiter Tokens API (gratuite, sans clé) : tokens les plus actifs (« organic score ») ;
-   2. RPC public Solana : dernières transactions de leur pool -> wallets qui ont acheté ;
+   2. RPC public gratuit : dernières transactions du token -> wallets qui ont acheté en payant eux-mêmes ;
    3. pour chaque wallet : tri rapide sur la liste de ses transactions (trop peu, trop actif, inactif),
       puis historique complet noté par HEAD (mêmes règles que pour un trader ajouté à la main).
 
@@ -38,6 +38,8 @@ from core.logs import redact
 from data.swap_parser import SOL_MINT, parse_swap
 
 SOURCE_AUTO = "auto"
+# Catégories Jupiter sans intérêt pour le copy trading de memecoins (stables, grosses cryptos, actions tokenisées…)
+EXCLUDED_TOKEN_TAGS = {"stable", "major", "stocks", "xstocks", "prestocks", "rwa", "equities", "lst"}
 
 
 def _f(value: Any) -> float | None:
@@ -246,22 +248,25 @@ class HunterAgent:
         skip = {self.settings["tokens"]["sol_mint"], self.settings["tokens"]["usdc_mint"],
                 self.settings["tokens"]["eurc_mint"]}
         min_liquidity = float(self.settings["judge"]["min_liquidity_usd"])
-        mints = [t["id"] for t in tokens if t["id"] not in skip and (_f(t.get("liquidity")) or 0) >= min_liquidity]
+        mints = [t["id"] for t in tokens if t["id"] not in skip and (_f(t.get("liquidity")) or 0) >= min_liquidity
+                 and not (set(t.get("tags") or []) & EXCLUDED_TOKEN_TAGS)]
         usdc = self.settings["tokens"]["usdc_mint"]
         min_buy = float(self.cfg["min_buy_sol"])
         buyers: dict[str, set[str]] = {}
         for mint in mints[: int(self.cfg["onchain_tokens"])]:
+            # Transactions qui touchent le token (tous pools et routes confondus). Mesuré en réel : la plupart
+            # sont des robots d'arbitrage (souvent en échec) ou des achats payés par le relais d'une application.
             try:
-                pair = await self.dex.best_pair(mint)
-                if pair is None:
-                    continue
-                signatures = await self.rpc.get_signatures_for_address(pair.pair_address,
-                                                                       limit=int(self.cfg["onchain_pool_sample"]))
+                signatures = await self.rpc.get_signatures_for_address(mint, limit=int(self.cfg["onchain_pool_sample"]))
             except Exception:  # noqa: BLE001
                 continue
+            read = 0
             for item in signatures:
-                if item.get("err") is not None:
+                if item.get("err") is not None:  # les robots d'arbitrage échouent souvent : ignorés
                     continue
+                if read >= int(self.cfg.get("onchain_tx_per_token", 40)):
+                    break
+                read += 1
                 try:
                     tx = await self.rpc.get_transaction(item["signature"])
                 except Exception:  # noqa: BLE001

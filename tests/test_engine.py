@@ -41,7 +41,7 @@ class Rpc:
         return []
 
     async def get_mint_info(self, mint):
-        return mint_info()
+        return mint_info() if mint == TOKEN else None   # un wallet n'est pas un token
 
     async def get_token_largest_accounts(self, mint):
         return []
@@ -275,3 +275,54 @@ def test_run_loop_starts_monitor_and_stops_cleanly(ready):
     assert seen["wallets"] == [WALLET] and seen["set"] == [WALLET]
     assert engine.status()["monitor"] == {"connected": True}
     assert ready.query_one("SELECT status FROM heartbeats WHERE component = 'engine'")["status"] == "STOPPED"
+
+
+def test_token_address_added_as_trader_is_removed_and_floods_are_cut(ready):
+    ready.upsert_trader(TOKEN, "erreur : adresse de token")
+    engine = make_engine(ready)
+    run(engine._remove_token_addresses())
+    active = [t["address"] for t in ready.list_traders(active_only=True)]
+    assert TOKEN not in active and WALLET in active
+    assert any("TOKEN" in a["message"] for a in ready.list_alerts())
+
+    async def flood():
+        engine.handle_notice = lambda n: asyncio.sleep(0)      # pas de traitement réel ici
+        for i in range(70):
+            await engine._on_notice(notice(f"f{i}"))
+    run(flood())
+    assert WALLET not in [t["address"] for t in ready.list_traders(active_only=True)]
+    assert any("copiable" in a["message"] for a in ready.list_alerts())
+
+
+def test_polling_monitor_reports_only_new_transactions():
+    from data.wallet_monitor import PollingMonitor
+
+    class SigRpc:
+        def __init__(self):
+            self.items = [{"signature": "old", "err": None}]
+
+        async def get_signatures_for_address(self, address, limit=20, until=None, critical=False):
+            if until is None:
+                return list(self.items)
+            out = []
+            for item in self.items:
+                if item["signature"] == until:
+                    break
+                out.append(item)
+            return out
+
+    seen = []
+
+    async def on_notice(n):
+        seen.append(n.signature)
+
+    rpc = SigRpc()
+    monitor = PollingMonitor("", [WALLET], on_notice, rpc=rpc)
+    run(monitor.poll_once())
+    assert seen == []                                          # l'historique n'est pas signalé
+    rpc.items = [{"signature": "n2", "err": None}, {"signature": "bad", "err": {"x": 1}},
+                 {"signature": "n1", "err": None}] + rpc.items
+    run(monitor.poll_once())
+    assert seen == ["n1", "n2"] and monitor.status()["connected"]
+    run(monitor.poll_once())
+    assert seen == ["n1", "n2"]

@@ -343,9 +343,26 @@ class DeskServer:
         address = str(body.get("address", "")).strip()
         if not is_valid_address(address):
             return _error("Adresse Solana invalide.")
+        if await self._is_token_address(address):
+            return _error("C'est l'adresse d'un TOKEN, pas d'un trader. Colle l'adresse du wallet qui achète "
+                          "(sur Phantom Terminal : onglet « Top Traders » ou « Trades », colonne « Wallet »).")
         max_traders = int(load_settings(self.db)["capital"]["max_traders"])
         self.db.upsert_trader(address, (body.get("label") or "").strip() or None, max_traders=max_traders)
         return _json({"ok": True})
+
+    async def _is_token_address(self, address: str) -> bool:
+        if address.endswith("pump") or address.endswith("bonk"):
+            return True  # adresses des tokens créés sur pump.fun / letsbonk
+        providers, temporary = self.engine_providers, None
+        try:
+            if providers is None:
+                providers = temporary = self.providers_factory()
+            return await asyncio.wait_for(providers.rpc.get_mint_info(address), timeout=8) is not None
+        except Exception:  # noqa: BLE001 - pas un token (ou vérification impossible) : on accepte
+            return False
+        finally:
+            if temporary is not None and hasattr(temporary, "aclose"):
+                await temporary.aclose()
 
     async def toggle_trader(self, request: web.Request) -> web.Response:
         address = request.match_info["address"]

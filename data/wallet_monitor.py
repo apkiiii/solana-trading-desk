@@ -197,3 +197,86 @@ class WalletMonitor:
             for item in reversed(items):  # du plus ancien au plus récent
                 if item.get("err") is None and item.get("signature"):
                     await self._emit(wallet, item["signature"], item.get("slot"), backfill=True)
+
+
+class PollingMonitor:
+    """Surveillance SANS WebSocket : interroge la liste des transactions de chaque wallet suivi.
+
+    Utilisée quand aucune clé Helius n'est enregistrée : les points d'accès publics gratuits ne
+    transmettent pas (ou mal) les abonnements en direct. Même interface que ``WalletMonitor``.
+    Au premier passage, l'historique existant n'est pas signalé (seules les nouvelles transactions le sont).
+    """
+
+    def __init__(self, ws_url: str, wallets: Iterable[str], on_notice: NoticeHandler, *, rpc: Any = None,
+                 interval: float = 4.0, max_per_poll: int = 20, sleep: Callable[[float], Awaitable[None]] | None = None):
+        self._wallets: list[str] = list(dict.fromkeys(wallets))
+        self._on_notice = on_notice
+        self._rpc = rpc
+        self._interval = interval
+        self._max = max_per_poll
+        self._last_signature: dict[str, str] = {}
+        self._seen: OrderedDict[str, None] = OrderedDict()
+        self.connected = False
+        self.connections = 0
+        self.last_message_at: datetime | None = None
+        self.last_error: str | None = None
+
+    @property
+    def wallets(self) -> list[str]:
+        return list(self._wallets)
+
+    def set_wallets(self, wallets: Iterable[str]) -> None:
+        self._wallets = list(dict.fromkeys(wallets))
+
+    def seed_last_signatures(self, last: dict[str, str]) -> None:
+        self._last_signature.update(last)
+
+    def status(self) -> dict[str, Any]:
+        return {"connected": self.connected, "connections": self.connections, "wallets": len(self._wallets),
+                "last_message_at": self.last_message_at.isoformat() if self.last_message_at else None,
+                "last_error": self.last_error, "mode": "interrogation toutes les %.0f s" % self._interval}
+
+    async def poll_once(self) -> int:
+        emitted = 0
+        for wallet in list(self._wallets):
+            until = self._last_signature.get(wallet)
+            try:
+                items = await self._rpc.get_signatures_for_address(wallet, limit=self._max, until=until,
+                                                                   critical=True)
+                self.connected, self.last_error = True, None
+            except Exception as exc:  # noqa: BLE001
+                self.connected, self.last_error = False, redact(str(exc))
+                continue
+            self.last_message_at = datetime.now(UTC)
+            if not items:
+                continue
+            newest = items[0].get("signature")
+            if until is None:  # premier passage : on note seulement où l'on en est
+                if newest:
+                    self._last_signature[wallet] = newest
+                continue
+            for item in reversed(items):  # du plus ancien au plus récent
+                signature = item.get("signature")
+                if item.get("err") is not None or not signature or signature in self._seen:
+                    continue
+                self._seen[signature] = None
+                while len(self._seen) > 10_000:
+                    self._seen.popitem(last=False)
+                emitted += 1
+                try:
+                    await self._on_notice(SignatureNotice(wallet=wallet, signature=signature, slot=item.get("slot"),
+                                                          received_at=datetime.now(UTC)))
+                except Exception:  # noqa: BLE001
+                    log.exception("Erreur lors du traitement de %s", signature)
+            if newest:
+                self._last_signature[wallet] = newest
+        return emitted
+
+    async def run(self, stop: asyncio.Event) -> None:
+        self.connections += 1
+        while not stop.is_set():
+            await self.poll_once()
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=self._interval)
+            except TimeoutError:
+                pass

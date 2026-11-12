@@ -250,3 +250,12 @@ def test_hunter_lets_the_bot_start_without_manual_traders(db, isolated, monkeypa
         assert status["gmgn_key"] is True and status["running"] is True
 
     run_with_client(db, scenario, providers_factory=lambda: FakeProviders(), engine_factory=engine_factory)
+
+
+def test_token_address_is_refused_as_trader(db, isolated):
+    async def scenario(client, _desk):
+        r = await client.post("/api/traders", json={"address": "5qaP7oKUqKffwwo5DaEqDoTtsBLMpdbQTxEkCDaTpump"})
+        assert r.status == 400 and "TOKEN" in (await r.json())["error"]
+        assert (await (await client.get("/api/traders")).json())["items"] == []
+
+    run_with_client(db, scenario)

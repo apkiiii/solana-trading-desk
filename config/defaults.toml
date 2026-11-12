@@ -64,7 +64,8 @@ scan_minutes = 15                 # nouvelle liste d'acheteurs toutes les 15 min
 onchain_category = "toporganicscore"  # tokens Jupiter : "toporganicscore", "toptraded" ou "toptrending"
 onchain_interval = "1h"           # "5m", "1h", "6h" ou "24h"
 onchain_tokens = 4                # tokens examinés par recherche
-onchain_pool_sample = 30          # dernières transactions lues par token
+onchain_pool_sample = 1000        # dernières signatures du token listées (1 requête ; les échecs sont sautés)
+onchain_tx_per_token = 90         # transactions réussies lues par token (mesuré : ~2 vrais acheteurs >= 0,2 SOL sur 90)
 min_buy_sol = 0.2                 # achats plus petits ignorés (bruit, robots)
 onchain_evals_per_cycle = 1       # historiques complets notés par passage (≈ 300 transactions chacun)
 
@@ -86,14 +87,17 @@ rpc_url = "https://mainnet.helius-rpc.com/?api-key={key}"
 ws_url = "wss://mainnet.helius-rpc.com/?api-key={key}"
 requests_per_second = 8.0         # offre gratuite : 10/s, on garde une marge
 monthly_credit_budget = 900000    # offre gratuite : 1 000 000 crédits/mois
-max_transaction_version = 0
+max_transaction_version = 1
 
 [providers.public_rpc]
-# RPC public de la Fondation Solana : gratuit, sans clé, limité (100 requêtes / 10 s par IP, 40 par méthode).
-# Utilisé par HUNTER, et pour tout le bot si aucune clé Helius n'est enregistrée.
-rpc_url = "https://api.mainnet.solana.com"
-ws_url = "wss://api.mainnet.solana.com"
+# RPC public gratuit et sans clé (PublicNode). Limites non publiées, appliquées par adresse IP : on reste à 3/s.
+# (Le RPC public de la Fondation Solana bloque vite une adresse IP qui l'interroge beaucoup.)
+# Utilisé par HUNTER, et pour tout le bot si aucune clé Helius n'est enregistrée ; dans ce cas, les wallets
+# suivis sont interrogés toutes les poll_seconds (pas de connexion en direct).
+rpc_url = "https://solana-rpc.publicnode.com"
+ws_url = "wss://solana-rpc.publicnode.com"
 requests_per_second = 3.0
+poll_seconds = 4.0
 
 [providers.jupiter]
 base_url = "https://api.jup.ag"

@@ -310,7 +310,7 @@ def test_snapshot_records_every_failing_source():
 def test_factory_uses_public_rpc_without_key_and_builds_urls(db):
     settings = load_settings(db)
     keyless = build_providers(settings, ApiSecrets())
-    assert keyless.keyless_rpc and keyless.ws_url == "wss://api.mainnet.solana.com"
+    assert keyless.keyless_rpc and keyless.ws_url == "wss://solana-rpc.publicnode.com"
     assert keyless.public_rpc is keyless.rpc and keyless.rpc.name == "solana-public"
     run(keyless.aclose())
     providers = build_providers(settings, ApiSecrets(helius_api_key="abcdef123456"), db)

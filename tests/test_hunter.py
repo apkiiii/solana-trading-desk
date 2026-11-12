@@ -192,7 +192,7 @@ def test_api_errors_never_crash_the_cycle(db):
 
 
 # ------------------------------------------------------------ source blockchain (sans clé)
-from tests.test_agents import POOL, buy_tx, pair, sell_tx  # noqa: E402
+from tests.test_agents import buy_tx, pair, sell_tx  # noqa: E402
 
 DAY = 86400
 
@@ -234,7 +234,7 @@ def chain_world():
         sig = f"pool{i}"
         rpc.txs[sig] = buy_tx(sig, wallet=wallet, sol=sol, ts=now - 60)
         pool.append({"signature": sig, "err": None, "blockTime": now - 60})
-    rpc.sigs[POOL] = pool
+    rpc.sigs[TOKEN] = pool
     # historique du bon trader : 36 trades sur ~35 jours, 75 % gagnants
     start = now - int(35.5 * DAY)
     history = []
