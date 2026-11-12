@@ -4,7 +4,7 @@ Chaque nouvelle version publiée sur GitHub avec l'étiquette ``v<version>`` est
 automatiquement dans l'application.
 """
 __version__ = "0.4.0"
-RELEASE_NAME = "Moteur de données"
+RELEASE_NAME = "Moteur de données"  # première version publiée
 
 
 def parse_version(text: str) -> tuple[int, ...]:
