@@ -363,9 +363,20 @@ class HunterAgent:
                         continue
                     if value >= min_buy:
                         buyers.setdefault(owner, set()).add(mint)
-        for wallet, seen in buyers.items():
-            self._note_candidate(wallet, now, origin="buyer", seen=len(seen), extra={"seen_tokens": sorted(seen)})
-        return len(buyers)
+        wallets = list(buyers)
+        try:
+            infos = await self.rpc.get_multiple_accounts(wallets, encoding="base64",
+                                                         data_slice={"offset": 0, "length": 0})
+        except Exception:  # noqa: BLE001
+            infos = [None] * len(wallets)
+        kept = 0
+        for wallet, info in zip(wallets, infos, strict=False):
+            if info is not None and info.get("owner") != SYSTEM_PROGRAM:
+                continue  # pool, coffre ou programme : pas un trader
+            kept += 1
+            self._note_candidate(wallet, now, origin="buyer", seen=len(buyers[wallet]),
+                                 extra={"seen_tokens": sorted(buyers[wallet])})
+        return kept
 
     async def evaluate_onchain(self, address: str, now: datetime) -> tuple[float | None, str | None]:
         reason, base = await self.prefilter(address, now)
@@ -378,17 +389,19 @@ class HunterAgent:
         agents = self.settings["agents"]
         judge = self.settings["judge"]
         limit = int(agents["head_max_transactions"])
-        signatures = [s for s in await self.rpc.get_signatures_for_address(address, limit=limit)
-                      if s.get("err") is None]
+        raw = await self.rpc.get_signatures_for_address(address, limit=limit)
+        signatures = [s for s in raw if s.get("err") is None]
+        # Âge et rythme mesurés sur TOUTES les transactions (un pool ou un robot en a beaucoup en échec).
+        all_times = [int(s["blockTime"]) for s in raw if s.get("blockTime")]
         times = [int(s["blockTime"]) for s in signatures if s.get("blockTime")]
         last = max(times) if times else None
-        span_days = (max(times) - min(times)) / 86400 if len(times) > 1 else 0.0
+        span_days = (max(all_times) - min(all_times)) / 86400 if len(all_times) > 1 else 0.0
         reason = None
-        if len(signatures) < 2 * int(judge["min_trader_closed_trades"]):
+        if len(raw) >= limit and span_days < float(judge["min_trader_history_days"]):
+            reason = (f"trop actif : {len(raw)} transactions en {span_days:.1f} j "
+                      f"(pool, robot, ou historique de {judge['min_trader_history_days']} j impossible à vérifier)")
+        elif len(signatures) < 2 * int(judge["min_trader_closed_trades"]):
             reason = f"pas assez de transactions ({len(signatures)})"
-        elif len(signatures) >= limit and span_days < float(judge["min_trader_history_days"]):
-            reason = (f"trop actif : {len(signatures)} transactions en {span_days:.1f} j "
-                      f"(impossible de vérifier {judge['min_trader_history_days']} j d'historique)")
         elif last is not None and now.timestamp() - last > 86400:
             reason = "aucun trade depuis 24 h"
         previous = (self.db.get_candidate(address) or {}).get("stats") or {}

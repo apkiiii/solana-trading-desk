@@ -338,3 +338,15 @@ def test_holders_scan_keeps_real_wallets_of_tokens_that_pumped(db):
     assert db.get_candidate(wallet)["stats"]["origin"] == "holder"
     assert db.get_candidate(wallet)["stats"]["holder_of"][0]["symbol"] == "PMP"
     assert db.get_candidate(app_user) is not None                 # utilisateur d'application (sans compte SOL)
+
+
+def test_prefilter_spots_pools_even_when_most_of_their_transactions_failed(db):
+    rpc = ChainRpc()
+    pool_like = addr(50)
+    now = int(datetime.now(UTC).timestamp())
+    # 300 transactions en 10 minutes, dont 280 en échec (robots d'arbitrage) : seulement 20 réussies
+    rpc.sigs[pool_like] = [{"signature": f"p{i}", "err": {"x": 1} if i % 15 else None, "blockTime": now - i * 2}
+                           for i in range(300)]
+    h = HunterAgent(None, db, load_settings(db), jupiter=ChainJupiter(), rpc=rpc, dex=ChainDex())
+    reason, _ = run(h.prefilter(pool_like, datetime.now(UTC)))
+    assert reason is not None and "trop actif" in reason
