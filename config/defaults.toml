@@ -1,0 +1,84 @@
+# =============================================================================
+# MY SOLANA TRADING DESK — valeurs par défaut
+#
+# Les sections [capital], [judge], [exit], [execution] et [schedule] peuvent être
+# modifiées depuis le tableau de bord (et uniquement par lui). Les modifications
+# sont enregistrées dans la base de données ; ce fichier reste la référence
+# d'origine. Les agents ne reçoivent qu'une copie en lecture seule.
+#
+# Les sections [providers] et [tokens] sont techniques : à ne modifier que si
+# un fournisseur change d'adresse.
+# =============================================================================
+
+[capital]
+total_eur = 50.0              # capital total maximal
+reserve_eur = 27.5            # réserve jamais investie
+trading_budget_eur = 17.5     # montant maximal investi en même temps
+fee_reserve_eur = 5.0         # SOL gardé pour payer les frais
+max_position_eur = 2.0        # montant maximal d'un achat
+max_open_positions = 2        # positions ouvertes en même temps
+max_traders = 3               # wallets suivis au maximum
+max_daily_loss_eur = 1.5      # au-delà : plus aucun nouvel achat ce jour-là
+
+[judge]
+min_trader_score = 60.0           # score HEAD minimal (0-100)
+min_trader_closed_trades = 30     # trades clôturés minimum dans l'historique
+min_trader_history_days = 14      # ancienneté minimale de l'historique
+max_source_age_seconds = 20       # au-delà, l'achat du trader est jugé trop ancien
+min_liquidity_usd = 20000.0       # liquidité minimale du pool principal
+max_top10_holders_pct = 35.0      # concentration maximale des 10 premiers détenteurs
+min_token_age_minutes = 30        # âge minimal du token
+max_buy_price_impact_pct = 2.0    # impact prix maximal à l'achat
+max_sell_price_impact_pct = 3.0   # impact prix maximal du devis de revente
+max_total_fees_pct = 3.0          # frais totaux maximum en % de la position
+max_report_age_seconds = 30       # fraîcheur maximale des rapports d'agents
+wait_timeout_seconds = 30         # durée maximale d'une décision WAIT
+
+[exit]
+stop_loss_pct = 25.0          # vente si perte latente >= 25 %
+take_profit_pct = 50.0        # vente si gain latent >= 50 %
+follow_trader_sells = true    # vendre quand le trader copié vend
+max_hold_hours = 24.0         # sortie au-delà de cette durée
+min_liquidity_usd = 5000.0    # sortie si la liquidité tombe sous ce seuil
+
+[execution]
+slippage_bps = 150                    # tolérance de slippage (1,5 %)
+max_priority_fee_lamports = 200000    # plafond de frais de priorité (0,0002 SOL)
+confirmation_timeout_seconds = 60
+
+[schedule]
+enabled = true
+start = "08:00"               # ouverture des nouvelles entrées
+stop = "23:00"                # fermeture des nouvelles entrées (les sorties continuent)
+days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+timezone = "Europe/Paris"
+
+[providers.helius]
+rpc_url = "https://mainnet.helius-rpc.com/?api-key={key}"
+ws_url = "wss://mainnet.helius-rpc.com/?api-key={key}"
+requests_per_second = 8.0         # offre gratuite : 10/s, on garde une marge
+monthly_credit_budget = 900000    # offre gratuite : 1 000 000 crédits/mois
+max_transaction_version = 0
+
+[providers.jupiter]
+base_url = "https://api.jup.ag"
+requests_per_second = 0.9         # clé gratuite : 1/s
+requests_per_second_keyless = 0.45
+
+[providers.dexscreener]
+base_url = "https://api.dexscreener.com"
+requests_per_second = 4.0         # limite publique : 300/min
+
+[providers.rugcheck]
+base_url = "https://api.rugcheck.xyz"
+requests_per_second = 1.0
+
+[updates]
+repository = "apkiiii/solana-trading-desk"   # dépôt GitHub public qui publie les versions
+check_interval_hours = 6.0
+installer_prefix = "SolanaTradingDesk-Setup-"
+
+[tokens]
+sol_mint = "So11111111111111111111111111111111111111112"
+usdc_mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+eurc_mint = "HzwqbKZw8HxMN6bF2yFZNrht3c2iXXzpKcFu7uBEDKtr"

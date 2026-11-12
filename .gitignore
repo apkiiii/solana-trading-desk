@@ -1,0 +1,30 @@
+# Secrets — ne jamais versionner
+.env
+*.key
+*keypair*.json
+id.json
+
+# Données locales
+storage/*
+!storage/.gitkeep
+backups/*
+!backups/.gitkeep
+logs/*
+!logs/.gitkeep
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Fabrication
+build/
+dist/
+*.spec
+updates/
+app.lock

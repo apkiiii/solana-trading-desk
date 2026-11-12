@@ -1,0 +1,45 @@
+name: Publier une version
+
+# Se déclenche quand une étiquette vX.Y.Z est poussée : tests, fabrication du .exe et de
+# l'installateur sous Windows, puis publication dans « Releases ». L'application installée
+# détecte alors la nouvelle version et la propose.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt
+      - name: Tests
+        run: python -m pytest -q
+      - name: Vérifier que l'étiquette correspond à la version du code
+        shell: pwsh
+        run: |
+          $version = (python -c "from core.version import __version__; print(__version__)").Trim()
+          if ("v$version" -ne "${{ github.ref_name }}") { throw "Étiquette ${{ github.ref_name }} différente de la version v$version" }
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Fabriquer l'exécutable et l'installateur
+        shell: pwsh
+        run: ./packaging/build_exe.ps1
+      - name: Publier la version
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Version ${{ env.VERSION }}"
+          body_path: packaging/release-notes/${{ env.VERSION }}.md
+          files: |
+            dist/installer/SolanaTradingDesk-Setup-${{ env.VERSION }}.exe
+            dist/installer/SHA256SUMS.txt
+          fail_on_unmatched_files: true
