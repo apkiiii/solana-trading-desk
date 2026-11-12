@@ -16,7 +16,7 @@ from agents.base import BLOCK, OK, UNAVAILABLE, WARN, AgentReport, guarded, unav
 from data.swap_parser import parse_swap
 
 
-HEAD_VERSION = 2  # 2 : les trades en USDC sont comptés
+HEAD_VERSION = 3  # 2 : trades en USDC comptés ; 3 : ancienneté mesurée sur toute la liste des transactions
 
 
 class HeadAgent:
@@ -33,6 +33,7 @@ class HeadAgent:
         agents = settings["agents"]
         judge = settings["judge"]
         self.max_transactions = int(agents["head_max_transactions"])
+        self.history_pages = int(agents.get("head_history_pages", 3))
         self.cache_hours = float(agents["head_cache_hours"])
         self.min_score = float(judge["min_trader_score"])
         self.min_closed = int(judge["min_trader_closed_trades"])
@@ -41,6 +42,26 @@ class HeadAgent:
     # ---------------------------------------------------------------- évaluation
     async def evaluate(self, wallet: str, *, timeout: float = 900.0) -> AgentReport:
         return await guarded(self.name, wallet, self._evaluate(wallet), timeout)
+
+    async def account_span(self, wallet: str, first: list[dict[str, Any]]) -> tuple[float, int, bool]:
+        """Ancienneté d'activité du wallet (jours), mesurée sur la liste de ses transactions (1 requête par
+        tranche de 1 000, sans lire les transactions). Renvoie (jours, transactions vues, début atteint)."""
+        signatures = list(first)
+        reached_start = len(first) < self.max_transactions
+        before = first[-1]["signature"] if first else None
+        pages = self.history_pages
+        while not reached_start and pages > 0 and before:
+            page = await self.rpc.get_signatures_for_address(wallet, limit=1000, before=before)
+            pages -= 1
+            if not page:
+                reached_start = True
+                break
+            signatures.extend(page)
+            before = page[-1]["signature"]
+            reached_start = len(page) < 1000
+        times = [int(s["blockTime"]) for s in signatures if s.get("blockTime")]
+        span = (max(times) - min(times)) / 86400 if len(times) > 1 else 0.0
+        return span, len(signatures), reached_start
 
     async def _fetch_events(self, wallet: str) -> list[Any]:
         signatures: list[dict[str, Any]] = []
@@ -62,16 +83,25 @@ class HeadAgent:
             return parse_swap(tx, wallet, usdc_mint=self.usdc_mint)
 
         results = await asyncio.gather(*(load(s["signature"]) for s in signatures if s.get("err") is None))
+        self._last_signatures = signatures
         return [e for e in results if e is not None]
 
     async def _evaluate(self, wallet: str) -> AgentReport:
+        self._last_signatures: list[dict[str, Any]] = []
         events = await self._fetch_events(wallet)
         usd_per_sol = await self._usd_per_sol()
         stats = compute_trader_stats(events, usd_per_sol=usd_per_sol, usdc_mint=self.usdc_mint)
+        # Un trader actif remplit 300 transactions en quelques jours : son ancienneté est mesurée sur toute
+        # la liste de ses transactions (les gains et la réussite restent calculés sur les trades analysés).
+        span, seen, reached_start = await self.account_span(wallet, self._last_signatures)
+        analysed_days = stats.history_days
+        stats.history_days = max(stats.history_days, span)
         score, notes = score_trader(stats, min_closed_trades=self.min_closed, min_history_days=self.min_days)
         payload = asdict(stats)
         payload.update({"score": score, "notes": notes, "evaluated_at": datetime.now(UTC).isoformat(),
-                        "head_version": HEAD_VERSION,
+                        "head_version": HEAD_VERSION, "analysed_days": round(analysed_days, 2),
+                        "account_span_days": round(span, 1), "account_transactions_seen": seen,
+                        "account_start_reached": reached_start,
                         "transactions_analysed": len(events)})
         self.db.update_trader_score(wallet, score, payload)
         return self._report(wallet, score, payload)

@@ -110,6 +110,7 @@ class DeskServer:
         r.add_get("/api/wallet", self.wallet_info)
         r.add_post("/api/wallet", self.wallet_import)
         r.add_post("/api/wallet/delete", self.wallet_delete)
+        r.add_get("/api/logs", self.logs)
         r.add_get("/api/hunter", self.hunter_status)
         r.add_post("/api/hunter/run", self.hunter_run)
         r.add_get("/api/keys", self.keys)
@@ -465,6 +466,19 @@ class DeskServer:
             return _json({"ok": True, "bot_state": "STOPPED"})
         return _error("Action inconnue.")
 
+    # ----------------------------------------------------------- journal technique
+    async def logs(self, request: web.Request) -> web.Response:
+        """Dernières lignes du journal technique (déjà expurgé des secrets à l'écriture)."""
+        from core.logs import redact
+        from core.paths import LOGS_DIR
+        lines = max(10, min(int(request.query.get("lines", "200")), 2000))
+        path = LOGS_DIR / "app.log"
+        if not path.exists():
+            return _json({"lines": []})
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            tail = handle.readlines()[-lines:]
+        return _json({"lines": [redact(line.rstrip("\n")) for line in tail]})
+
     # ---------------------------------------------------------------- HUNTER
     def _hunter_ready(self) -> bool:
         return bool(load_settings(self.db)["discovery"]["enabled"])
@@ -480,14 +494,16 @@ class DeskServer:
     async def hunter_status(self, _request: web.Request) -> web.Response:
         settings = load_settings(self.db)
         try:
-            has_key = bool(load_secrets().gmgn_api_key)
+            secrets = load_secrets()
+            has_key, has_helius = bool(secrets.gmgn_api_key), bool(secrets.helius_api_key)
         except SecretsError:
-            has_key = False
+            has_key = has_helius = False
         last = self.db.latest_agent_reports("HUNTER", 1)
         traders = self.db.list_traders(active_only=True)
         source = self._hunter_source(settings, has_key)
         scan = self.db.query_one("SELECT at, detail FROM heartbeats WHERE component = 'hunter_scan'")
-        return _json({"gmgn_key": has_key, "settings": dict(settings["discovery"]), "source": source,
+        return _json({"gmgn_key": has_key, "helius": has_helius, "helius_credits_today": self.db.day_credits("helius-hunter"),
+                      "settings": dict(settings["discovery"]), "source": source,
                       "max_traders": settings["capital"]["max_traders"], "last_scan": scan,
                       "running": self.engine_running and bool(settings["discovery"]["enabled"]) and source is not None,
                       "last": last[0] if last else None, "followed": len(traders),

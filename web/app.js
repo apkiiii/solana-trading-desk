@@ -392,7 +392,7 @@ async function loadHunter() {
   const h = await api("/api/hunter");
   const c = h.settings;
   const chip = $("#h-chip");
-  const srcName = h.source === "gmgn" ? "GMGN" : h.source === "onchain" ? "blockchain, sans clé" : "aucune source";
+  const srcName = h.source === "gmgn" ? "GMGN" : h.source === "onchain" ? (h.helius ? `blockchain + Helius, ${num(h.helius_credits_today)}/${num(c.helius_daily_credits)} crédits aujourd'hui` : "blockchain, sans clé") : "aucune source";
   if (!h.source) { chip.className = "chip warn"; chip.innerHTML = "<i></i>aucune source"; }
   else if (!c.enabled) { chip.className = "chip"; chip.innerHTML = "<i></i>désactivée"; }
   else if (h.running) { chip.className = "chip ok"; chip.innerHTML = `<i></i>active (${srcName}) — toutes les ${num(c.interval_minutes)} min`; }

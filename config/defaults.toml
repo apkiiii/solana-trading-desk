@@ -54,6 +54,7 @@ candidates_per_cycle = 6          # candidats évalués à chaque passage (limit
 stats_ttl_minutes = 60            # une évaluation reste valable 1 h
 min_tokens = 10                   # tokens tradés minimum sur la période
 max_trades_per_day = 150          # au-delà : robot impossible à suivre
+max_tx_per_day = 400              # tri rapide : au-delà (échecs compris), pool ou robot
 min_avg_hold_seconds = 60         # revend trop vite pour être copié avec quelques secondes de retard
 max_idle_minutes = 60             # aucun trade depuis 60 min : non concluant
 max_copied_loss_eur = 1.0         # nos copies de ce trader ont perdu 1 € : non concluant
@@ -122,6 +123,7 @@ requests_per_second = 1.0
 [agents]
 head_max_transactions = 300        # transactions analysées par trader (1 crédit Helius chacune)
 head_cache_hours = 6.0             # durée de validité d'une évaluation HEAD
+head_history_pages = 3             # ancienneté mesurée sur jusqu'à 300 + 3 000 transactions (1 requête / 1 000)
 whale_sample_size = 25             # transactions récentes du pool examinées par WHALE
 whale_big_trade_pct_liquidity = 1.0  # une transaction >= 1 % de la liquidité est « grosse »
 whale_group_window_minutes = 30    # fenêtre pour repérer des achats groupés des traders suivis

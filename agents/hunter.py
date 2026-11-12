@@ -33,7 +33,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from agents.base import OK, UNAVAILABLE, WARN, AgentReport, unavailable
-from agents.head import HeadAgent
+from agents.head import HEAD_VERSION, HeadAgent
 from core.logs import redact
 from data.swap_parser import SOL_MINT, parse_swap
 
@@ -391,22 +391,27 @@ class HunterAgent:
         limit = int(agents["head_max_transactions"])
         raw = await self.rpc.get_signatures_for_address(address, limit=limit)
         signatures = [s for s in raw if s.get("err") is None]
-        # Âge et rythme mesurés sur TOUTES les transactions (un pool ou un robot en a beaucoup en échec).
-        all_times = [int(s["blockTime"]) for s in raw if s.get("blockTime")]
         times = [int(s["blockTime"]) for s in signatures if s.get("blockTime")]
         last = max(times) if times else None
-        span_days = (max(all_times) - min(all_times)) / 86400 if len(all_times) > 1 else 0.0
+        # Ancienneté et rythme mesurés sur TOUTE la liste (échecs compris : un pool ou un robot en a beaucoup).
+        head = HeadAgent(self.rpc, self.db, self.settings, usdc_mint=self.settings["tokens"]["usdc_mint"])
+        span_days, seen, reached_start = await head.account_span(address, raw)
+        per_day = seen / max(span_days, 1 / 24)
+        min_days = float(judge["min_trader_history_days"])
         reason = None
-        if len(raw) >= limit and span_days < float(judge["min_trader_history_days"]):
-            reason = (f"trop actif : {len(raw)} transactions en {span_days:.1f} j "
-                      f"(pool, robot, ou historique de {judge['min_trader_history_days']} j impossible à vérifier)")
+        if per_day > float(self.cfg.get("max_tx_per_day", 400)):
+            reason = f"trop actif : environ {per_day:.0f} transactions par jour (pool ou robot)"
+        elif span_days < min_days:
+            reason = (f"wallet trop récent : {span_days:.1f} j d'activité (minimum {min_days:.0f} j)" if reached_start
+                      else f"trop actif : {seen} transactions en {span_days:.1f} j (robot probable)")
         elif len(signatures) < 2 * int(judge["min_trader_closed_trades"]):
             reason = f"pas assez de transactions ({len(signatures)})"
         elif last is not None and now.timestamp() - last > 86400:
             reason = "aucun trade depuis 24 h"
         previous = (self.db.get_candidate(address) or {}).get("stats") or {}
         base = {"origin": "onchain", "seen": previous.get("seen"), "seen_tokens": previous.get("seen_tokens"),
-                "last_trade_at": last, "transactions": len(signatures), "span_days": round(span_days, 1)}
+                "last_trade_at": last, "transactions": seen, "span_days": round(span_days, 1),
+                "head_version": HEAD_VERSION}
         if reason:
             self.db.upsert_candidate(address, score=0.0, status="excluded", reason=reason,
                                      stats={**base, "evaluated_at": now.isoformat()}, evaluated_at=now)
@@ -432,8 +437,23 @@ class HunterAgent:
             self.db.update_trader_score(address, score, payload)
         return score, reason
 
+    def _retry_old_method_exclusions(self) -> int:
+        """Candidats écartés seulement pour « historique trop court » par une ancienne méthode : à revérifier."""
+        count = 0
+        for candidate in self.db.list_candidates(1000):
+            stats = candidate.get("stats") or {}
+            if candidate["status"] != "excluded" or stats.get("head_version") == HEAD_VERSION:
+                continue
+            notes = " ".join(stats.get("notes") or []) + " " + (candidate.get("reason") or "")
+            if "trop court" in notes or "trop actif" in (candidate.get("reason") or ""):
+                self.db.execute("UPDATE trader_candidates SET status = 'new', reason = NULL WHERE address = ?",
+                                (candidate["address"],))
+                count += 1
+        return count
+
     async def _cycle_onchain(self, now: datetime) -> AgentReport:
         self.db.release_dropped_candidates(now - timedelta(hours=float(self.cfg["cooldown_hours"])))
+        self._retry_old_method_exclusions()
         row = self.db.query_one("SELECT at FROM heartbeats WHERE component = 'hunter_scan'")
         found = None
         if row is None or (now - datetime.fromisoformat(row["at"])).total_seconds() >= float(

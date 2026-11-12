@@ -264,8 +264,8 @@ def test_onchain_search_finds_and_checks_traders_without_any_key(db):
     roster = db.list_traders(active_only=True)
     assert [t["address"] for t in roster] == [good] and roster[0]["source"] == SOURCE_AUTO
     assert roster[0]["score"] >= 60 and roster[0]["stats"]["avg_win_pct"] is not None
-    assert "trop actif" in db.get_candidate(bot)["reason"]
-    assert "pas assez" in db.get_candidate(small)["reason"]
+    assert "trop" in db.get_candidate(bot)["reason"]          # trop actif ou trop récent
+    assert "pas assez" in db.get_candidate(small)["reason"] or "récent" in db.get_candidate(small)["reason"]
     assert report.status == "WARN"                         # 1/5 : la recherche continue
     # passage suivant 2 min plus tard : pas de nouveau scan (toutes les 15 min), rien à réévaluer
     report2 = run(h.cycle(now=datetime.now(UTC) + timedelta(minutes=2)))
@@ -350,3 +350,19 @@ def test_prefilter_spots_pools_even_when_most_of_their_transactions_failed(db):
     h = HunterAgent(None, db, load_settings(db), jupiter=ChainJupiter(), rpc=rpc, dex=ChainDex())
     reason, _ = run(h.prefilter(pool_like, datetime.now(UTC)))
     assert reason is not None and "trop actif" in reason
+
+
+def test_active_trader_with_old_wallet_is_not_capped_by_the_300_transaction_window(db):
+    """Cas réel : 300 transactions en 2 jours, mais un wallet actif depuis 40 jours."""
+    rpc, good, *_ = chain_world()
+    now = int(datetime.now(UTC).timestamp())
+    recent = rpc.sigs[good]                                         # historique de trades (~35 jours)
+    # on le compresse sur 2 jours, puis on ajoute une longue liste plus ancienne (transferts, etc.)
+    for i, item in enumerate(recent):
+        item["blockTime"] = now - i * 2400
+    filler = [{"signature": f"old{i}", "err": None, "blockTime": now - 3 * DAY - i * 3000} for i in range(1000)]
+    rpc.sigs[good] = recent + [{"signature": f"pad{i}", "err": None, "blockTime": now - 2 * DAY - i}
+                               for i in range(300 - len(recent))] + filler
+    h = HunterAgent(None, db, load_settings(db), jupiter=ChainJupiter(), rpc=rpc, dex=ChainDex())
+    reason, base = run(h.prefilter(good, datetime.now(UTC)))
+    assert reason is None and base["span_days"] > 14
