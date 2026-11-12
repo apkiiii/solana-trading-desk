@@ -43,14 +43,22 @@ class HeadAgent:
     async def evaluate(self, wallet: str, *, timeout: float = 900.0) -> AgentReport:
         return await guarded(self.name, wallet, self._evaluate(wallet), timeout)
 
-    async def account_span(self, wallet: str, first: list[dict[str, Any]]) -> tuple[float, int, bool]:
+    async def account_span(self, wallet: str, first: list[dict[str, Any]],
+                           enough_days: float | None = None) -> tuple[float, int, bool]:
         """Ancienneté d'activité du wallet (jours), mesurée sur la liste de ses transactions (1 requête par
         tranche de 1 000, sans lire les transactions). Renvoie (jours, transactions vues, début atteint)."""
         signatures = list(first)
         reached_start = len(first) < self.max_transactions
         before = first[-1]["signature"] if first else None
         pages = self.history_pages
-        while not reached_start and pages > 0 and before:
+        target = self.min_days if enough_days is None else enough_days
+
+        def span_of(items: list[dict[str, Any]]) -> float:
+            stamps = [int(s["blockTime"]) for s in items if s.get("blockTime")]
+            return (max(stamps) - min(stamps)) / 86400 if len(stamps) > 1 else 0.0
+
+        # Inutile de lire plus loin si l'ancienneté requise est déjà atteinte (économise des requêtes).
+        while not reached_start and pages > 0 and before and span_of(signatures) < target:
             page = await self.rpc.get_signatures_for_address(wallet, limit=1000, before=before)
             pages -= 1
             if not page:

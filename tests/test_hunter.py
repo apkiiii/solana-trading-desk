@@ -366,3 +366,35 @@ def test_active_trader_with_old_wallet_is_not_capped_by_the_300_transaction_wind
     h = HunterAgent(None, db, load_settings(db), jupiter=ChainJupiter(), rpc=rpc, dex=ChainDex())
     reason, base = run(h.prefilter(good, datetime.now(UTC)))
     assert reason is None and base["span_days"] > 14
+
+
+def test_rate_limit_errors_postpone_the_candidate_instead_of_excluding_it(db):
+    class Limited(ChainRpc):
+        async def get_transaction(self, signature, **_):
+            raise RuntimeError("HTTP 429")
+
+    rpc, good, *_ = chain_world()
+    limited = Limited()
+    limited.sigs, limited.txs = rpc.sigs, rpc.txs
+    h = HunterAgent(None, db, load_settings(db), jupiter=ChainJupiter(), rpc=limited, dex=ChainDex())
+    db.upsert_candidate(good, score=None, status="new", reason=None, stats={"origin": "holder"})
+    score, reason = run(h.full_evaluation(good, {}, datetime.now(UTC)))
+    assert score is None and "reportée" in reason
+    assert db.get_candidate(good)["status"] == "new"            # sera revérifié au prochain passage
+
+
+def test_account_span_stops_reading_once_the_required_age_is_reached(db):
+    calls = []
+
+    class Counting(ChainRpc):
+        async def get_signatures_for_address(self, address, limit=100, before=None, **_):
+            calls.append(before)
+            return await super().get_signatures_for_address(address, limit=limit, before=before)
+
+    rpc = Counting()
+    now = int(datetime.now(UTC).timestamp())
+    rpc.sigs["W"] = [{"signature": f"s{i}", "err": None, "blockTime": now - i * 5000} for i in range(2000)]
+    head = HeadAgent(rpc, db, load_settings(db), usdc_mint="x")
+    first = rpc.sigs["W"][:300]                                  # 300 transactions = ~17 jours : déjà assez
+    span, seen, _ = run(head.account_span("W", first))
+    assert span > 14 and seen == 300 and calls == []

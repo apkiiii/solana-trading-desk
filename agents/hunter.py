@@ -426,7 +426,8 @@ class HunterAgent:
         score = _f(payload.get("score"))
         reason = None
         if report.status == UNAVAILABLE or score is None:
-            reason = f"évaluation impossible : {report.summary}"
+            # Erreur passagère (limite de débit, réseau) : le candidat reste « à vérifier », sans être pénalisé.
+            return None, f"évaluation reportée : {report.summary}"
         elif score < float(judge["min_trader_score"]):
             reason = (report.reasons or [f"note {score:.0f}"])[0]
         elif payload.get("avg_win_pct") is None:
@@ -467,7 +468,13 @@ class HunterAgent:
         queue = [a for a in followed if self._needs_eval(a, now, ttl)] + [c["address"] for c in fresh]
         evaluated = []
         batch = queue[: int(self.cfg.get("onchain_prefilter_per_cycle", 12))]
-        results = await asyncio.gather(*(self.prefilter(a, now) for a in batch), return_exceptions=True)
+        gate = asyncio.Semaphore(3)  # quelques tris à la fois : respecte la limite de débit du fournisseur
+
+        async def limited(address: str) -> tuple[str | None, dict[str, Any]]:
+            async with gate:
+                return await self.prefilter(address, now)
+
+        results = await asyncio.gather(*(limited(a) for a in batch), return_exceptions=True)
         passing = []
         for address, result in zip(batch, results, strict=True):
             if isinstance(result, BaseException):

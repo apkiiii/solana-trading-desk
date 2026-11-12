@@ -93,7 +93,7 @@ timezone = "Europe/Paris"
 rpc_url = "https://mainnet.helius-rpc.com/?api-key={key}"
 ws_url = "wss://mainnet.helius-rpc.com/?api-key={key}"
 requests_per_second = 6.0         # offre gratuite : 10/s au total, partagés avec la recherche de traders
-hunter_requests_per_second = 4.0  # part réservée à HUNTER
+hunter_requests_per_second = 2.5  # part réservée à HUNTER (marge contre les erreurs 429)
 monthly_credit_budget = 900000    # offre gratuite : 1 000 000 crédits/mois
 max_transaction_version = 1
 
