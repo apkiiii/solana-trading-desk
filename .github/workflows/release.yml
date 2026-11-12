@@ -7,7 +7,7 @@ name: Publier une version
 on:
   push:
     branches: [main]
-    paths: ["core/version.py"]
+    paths: ["core/version.py", "requirements.txt", "packaging/**", ".github/workflows/release.yml"]
   workflow_dispatch:
 
 permissions:

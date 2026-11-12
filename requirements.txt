@@ -2,6 +2,7 @@
 httpx>=0.27,<1.0          # requêtes HTTP vers les API (Helius, Jupiter, DexScreener, RugCheck)
 websockets>=14,<18        # surveillance des wallets en temps réel
 python-dotenv>=1.0        # lecture du fichier .env (clés API uniquement)
+tzdata>=2024.1            # fuseaux horaires (Windows n'en fournit pas à Python)
 solders>=0.21             # adresses, transactions et signatures Solana
 keyring>=25               # clé privée dans le Gestionnaire d'identifiants Windows (étape 7)
 PySide6>=6.7              # application de bureau Windows (étape 9)

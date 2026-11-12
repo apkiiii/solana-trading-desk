@@ -13,6 +13,7 @@ python -m PyInstaller --noconfirm --clean --windowed `
     --add-data "config\defaults.toml;config" `
     --add-data "assets;assets" `
     --collect-submodules keyring `
+    --collect-data tzdata `
     --exclude-module tests `
     --exclude-module pytest `
     --exclude-module numpy `
