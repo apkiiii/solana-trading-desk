@@ -37,6 +37,7 @@ async function busy(button, label, fn) {
 
 /* ================================================================ agents */
 const AGENTS = {
+  HUNTER: {role: "Trouve les meilleurs traders", c: "#c58bff", ini: "HU"},
   SCOUT: {role: "Surveille tes traders", c: "#5aa8ff", ini: "SC"},
   HEAD: {role: "Note les traders", c: "#9b6bff", ini: "HD"},
   WHALE: {role: "Gros mouvements", c: "#2fd0e8", ini: "WH"},
@@ -211,7 +212,7 @@ async function loadTraders() {
     const color = score == null ? "#5d6886" : score >= 60 ? "var(--green)" : score >= 40 ? "var(--amber)" : "var(--red)";
     const notes = (s.notes || []).map(esc).join("<br>");
     return `<tr><td><div class="ring" style="--p:${score || 0};--rc:${color}"><span>${score == null ? "—" : Math.round(score)}</span></div></td>
-      <td><b>${esc(t.label || "Sans nom")}</b><div class="addr muted">${esc(t.address)}</div>${notes ? `<div style="font-size:11.5px;color:var(--amber);margin-top:4px">${notes}</div>` : ""}</td>
+      <td><b>${esc(t.label || "Sans nom")}</b> ${t.source === "auto" ? '<span class="chip gold" style="padding:1px 7px;font-size:10.5px">auto</span>' : '<span class="chip" style="padding:1px 7px;font-size:10.5px">manuel</span>'}<div class="addr muted">${esc(t.address)}</div>${notes ? `<div style="font-size:11.5px;color:var(--amber);margin-top:4px">${notes}</div>` : ""}</td>
       <td class="mono">${s.win_rate == null ? "—" : num(s.win_rate * 100) + " %"}<div class="dim" style="font-size:11px">${s.closed_trades ?? 0} trades</div></td>
       <td class="mono ${s.realized_pnl_sol > 0 ? "pos" : s.realized_pnl_sol < 0 ? "neg" : ""}">${s.realized_pnl_sol == null ? "—" : num(s.realized_pnl_sol, 3) + " SOL"}</td>
       <td class="mono">${s.max_drawdown_pct == null ? "—" : num(s.max_drawdown_pct) + " %"}</td>
@@ -336,6 +337,7 @@ async function saveSetting(section, key, el) {
 /* ================================================================ clés + diagnostic */
 const KEYS = [
   ["HELIUS_API_KEY", "Helius", "Obligatoire — lecture de la blockchain en temps réel", "https://dashboard.helius.dev"],
+  ["GMGN_API_KEY", "GMGN", "Recherche automatique des meilleurs traders (lecture seule, gratuite) — voir « Clé GMGN » plus bas", "https://gmgn.ai/ai"],
   ["JUPITER_API_KEY", "Jupiter", "Optionnelle (gratuite) — devis plus rapides : conseillée pour le compte réel", "https://portal.jup.ag"],
   ["RUGCHECK_API_KEY", "RugCheck", "Optionnelle — rapports de risque plus frais", "https://rugcheck.xyz"],
 ];
@@ -383,6 +385,79 @@ async function loadWallet() {
   if ($("#w-delete")) $("#w-delete").onclick = (e) => {
     if (!confirm("Retirer ce wallet du logiciel ? Les fonds restent dans Phantom ; le compte réel sera désactivé.")) return;
     busy(e.currentTarget, "…", async () => { await api("/api/wallet/delete", {}); toast("Wallet retiré du logiciel.", "ok"); loadWallet(); refreshState(); });
+  };
+}
+
+async function loadHunter() {
+  const h = await api("/api/hunter");
+  const c = h.settings;
+  const chip = $("#h-chip");
+  if (!h.gmgn_key) { chip.className = "chip warn"; chip.innerHTML = "<i></i>clé GMGN à ajouter"; }
+  else if (!c.enabled) { chip.className = "chip"; chip.innerHTML = "<i></i>désactivée"; }
+  else if (h.running) { chip.className = "chip ok"; chip.innerHTML = `<i></i>active — toutes les ${num(c.interval_minutes)} min`; }
+  else { chip.className = "chip"; chip.innerHTML = "<i></i>démarre avec le bot"; }
+  const last = h.last;
+  const cands = h.candidates.filter((x) => x.status !== "new");
+  const statusText = {ok: ["ok", "retenu"], excluded: ["bad", "exclu"], dropped: ["warn", "écarté"], new: ["", "à évaluer"]};
+  $("#hunter").innerHTML = `
+    ${h.gmgn_key ? "" : `<div class="banner" style="margin:0 0 12px"><b>Clé GMGN requise</b><span>Elle est gratuite : menu <a href="#connections">Connexions</a> → « Clé GMGN ». Sans elle, ajoute tes traders à la main.</span></div>`}
+    <p class="muted" style="margin-top:0">HUNTER parcourt les listes « smart money » et « KOL » de GMGN, note chaque trader (réussite, rendement, gains réels de ses dernières ventes, pertes lourdes) et écarte les robots, les créateurs de tokens et ceux qui revendent trop vite pour être copiés. Toutes les ${num(c.interval_minutes)} min, il <b>retire les traders non concluants</b> (note en baisse, inactifs depuis ${num(c.max_idle_minutes)} min, ou copies perdantes de ${eur(c.max_copied_loss_eur)}) et les remplace par les meilleurs candidats. Il ne fait qu'<b>choisir qui suivre</b> : chaque achat passe toujours par le JUDGE.</p>
+    <div class="grid g4" style="margin:12px 0">
+      <div class="setting" style="grid-template-columns:1fr"><div><b>Recherche</b></div><select data-h="enabled"><option value="true" ${c.enabled ? "selected" : ""}>Activée</option><option value="false" ${!c.enabled ? "selected" : ""}>Désactivée</option></select></div>
+      <div class="setting" style="grid-template-columns:1fr"><div><b>Traders copiés</b><span>maximum ${h.max_traders}</span></div><input class="input mono" type="number" min="1" max="${h.max_traders}" data-h="target_traders" value="${c.target_traders}"></div>
+      <div class="setting" style="grid-template-columns:1fr"><div><b>Vérification toutes les</b><span>minutes</span></div><input class="input mono" type="number" min="1" step="1" data-h="interval_minutes" value="${c.interval_minutes}"></div>
+      <div class="setting" style="grid-template-columns:1fr"><div><b>Période analysée</b></div><select data-h="period"><option value="7d" ${c.period === "7d" ? "selected" : ""}>7 jours</option><option value="30d" ${c.period === "30d" ? "selected" : ""}>30 jours</option></select></div>
+    </div>
+    <div class="row"><span class="muted">${h.followed} trader(s) suivi(s) dont ${h.auto} trouvé(s) par HUNTER${last ? ` · dernier passage ${ago(last.created_at)} : ${esc(last.summary)}` : ""}</span><span class="spacer"></span><button class="btn gold" id="h-run" ${h.gmgn_key ? "" : "disabled"}>Chercher maintenant</button></div>
+    ${cands.length ? `<table style="margin-top:12px"><thead><tr><th>Note</th><th>Trader</th><th>Réussite</th><th>Rendement</th><th>Gain moyen</th><th>Tokens</th><th>Statut</th></tr></thead><tbody>${cands.slice(0, 15).map((x) => {
+      const st = x.stats || {};
+      const s2 = x.followed ? ["ok", "copié"] : x.status === "ok" ? ["", "en réserve"] : (statusText[x.status] || ["", x.status]);
+      return `<tr><td class="mono"><b>${x.score == null ? "—" : num(x.score)}</b></td><td><div class="addr">${short(x.address)}${st.name ? ` <span class="muted">@${esc(st.name)}</span>` : ""}</div></td>
+        <td class="mono">${st.win_rate == null ? "—" : num(st.win_rate * 100) + " %"}</td><td class="mono ${st.roi_pct > 0 ? "pos" : st.roi_pct < 0 ? "neg" : ""}">${st.roi_pct == null ? "—" : num(st.roi_pct) + " %"}</td>
+        <td class="mono">${st.avg_win_pct == null ? "—" : "+" + num(st.avg_win_pct) + " %"}</td><td class="mono">${st.token_num ?? "—"}</td>
+        <td><span class="chip ${s2[0]}" style="padding:2px 8px">${s2[1]}</span>${x.reason ? `<div class="dim" style="font-size:11px;margin-top:3px">${esc(x.reason)}</div>` : ""}</td></tr>`;
+    }).join("")}</tbody></table>` : `<div class="empty" style="margin-top:12px">Aucun candidat évalué pour l'instant.</div>`}`;
+  $$("[data-h]").forEach((el) => el.onchange = async () => {
+    const key = el.dataset.h;
+    let value = el.value;
+    if (key === "enabled") value = value === "true";
+    else if (key !== "period") value = Number(value);
+    try { await api("/api/settings", {section: "discovery", key, value}); toast("Réglage enregistré.", "ok"); loadHunter(); }
+    catch (e) { toast(e.message, "err"); loadHunter(); }
+  });
+  if ($("#h-run")) $("#h-run").onclick = (e) => busy(e.currentTarget, "Recherche…", async () => {
+    const r = await api("/api/hunter/run", {});
+    toast(r.summary, r.status === "UNAVAILABLE" ? "err" : "ok");
+    loadHunter(); loadTraders(); refreshState();
+  });
+}
+
+async function loadGmgnKey() {
+  const k = await api("/api/gmgn/key");
+  const chip = $("#gk-chip");
+  chip.className = `chip ${k.exists ? "ok" : "warn"}`;
+  chip.innerHTML = `<i></i>${k.exists ? "créée" : "à créer"}`;
+  const steps = `<ol style="margin:12px 0 0;padding-left:18px;line-height:1.8">
+      <li>Clique sur <b>Copier la clé publique</b>.</li>
+      <li>Sur <a href="https://gmgn.ai/ai" target="_blank" rel="noopener">gmgn.ai/ai</a> (connecté à ton compte GMGN), colle-la dans <b>Upload Public Key</b>.</li>
+      <li>Laisse seulement <b>Enable Reading</b> (la lecture suffit, le trading passe par Jupiter et ton compte Phantom « Bot »), puis <b>Next</b>.</li>
+      <li>GMGN t'affiche ta <b>clé API</b> : colle-la dans « Clés API » → <b>GMGN</b>, puis <b>Enregistrer les clés</b>.</li></ol>`;
+  $("#gmgn-key").innerHTML = k.exists
+    ? `<p class="muted" style="margin-top:0">Elle permet à HUNTER de lire les classements de GMGN. Elle ne donne <b>aucun accès</b> à ton wallet ; sa partie secrète reste dans le coffre-fort de Windows.</p>
+       <textarea class="input mono" rows="4" readonly id="gk-pem" style="font-size:12px">${esc(k.public_pem)}</textarea>
+       <div class="row" style="margin-top:10px"><button class="btn gold" id="gk-copy">Copier la clé publique</button><span class="spacer"></span><button class="btn ghost sm" id="gk-replace">Remplacer la clé</button></div>${steps}`
+    : `<p class="muted" style="margin-top:0">GMGN demande une clé publique pour te donner une clé API gratuite. Le logiciel la crée sur ce PC ; elle ne donne <b>aucun accès</b> à ton wallet.</p>
+       <button class="btn gold" id="gk-create">Créer ma clé GMGN</button>${steps}`;
+  const create = async (replace) => { await api("/api/gmgn/key", {replace}); toast("Clé créée. Copie la clé publique sur gmgn.ai/ai.", "ok"); loadGmgnKey(); };
+  if ($("#gk-create")) $("#gk-create").onclick = (e) => busy(e.currentTarget, "Création…", () => create(false));
+  if ($("#gk-replace")) $("#gk-replace").onclick = (e) => {
+    if (!confirm("Remplacer la clé ? Ta clé API GMGN actuelle ne fonctionnera plus : il faudra en recréer une sur gmgn.ai/ai.")) return;
+    busy(e.currentTarget, "…", () => create(true));
+  };
+  if ($("#gk-copy")) $("#gk-copy").onclick = async () => {
+    const pem = $("#gk-pem").value;
+    try { await navigator.clipboard.writeText(pem); } catch { $("#gk-pem").select(); document.execCommand("copy"); }
+    toast("Clé publique copiée. Colle-la sur gmgn.ai/ai.", "ok");
   };
 }
 
@@ -453,11 +528,11 @@ let wzStep = 0;
 const WZ = [
   () => `<h2>Bienvenue dans ton Trading Desk</h2><p>En 3 étapes, le logiciel sera prêt. Tu commences en <b>compte démo</b> : argent fictif, marché réel, aucun risque.</p>
     <div class="grid g3" style="margin-top:16px"><div class="panel panel-b"><b>Les agents</b><p class="muted" style="margin:6px 0 0">surveillent tes traders et vérifient chaque token.</p></div><div class="panel panel-b"><b>Le JUDGE</b><p class="muted" style="margin:6px 0 0">autorise ou refuse chaque achat selon des règles fixes.</p></div><div class="panel panel-b"><b>Toi</b><p class="muted" style="margin:6px 0 0">choisis un profil, et c'est tout.</p></div></div>`,
-  () => `<h2>1. Tes clés de connexion</h2><p>Helius est obligatoire (gratuit) : il permet de voir les trades de tes traders en temps réel. Les clés restent sur ce PC.</p><div id="wz-keys"></div>`,
+  () => `<h2>1. Tes clés de connexion</h2><p>Helius est obligatoire (gratuit) : il permet de voir les trades de tes traders en temps réel. GMGN (gratuit) permet au bot de trouver lui-même les meilleurs traders. Les clés restent sur ce PC.</p><div id="wz-keys"></div>`,
   () => `<h2>2. Ton profil de risque</h2><p>Tu pourras le changer à tout moment dans Réglages.</p><div class="profiles" id="wz-profiles" style="grid-template-columns:1fr"></div>`,
-  () => `<h2>3. Un premier trader à suivre</h2><p>Sur GMGN, ouvre un wallet « smart money » avec un bon historique et copie son adresse publique.</p>
+  () => `<h2>3. Les traders à copier</h2><p>Avec ta clé GMGN, l'agent HUNTER trouve lui-même les 5 meilleurs traders et remplace ceux qui ne sont pas concluants. Tu peux aussi en ajouter un à la main :</p>
     <div class="row" style="margin-top:12px"><input class="input mono" id="wz-addr" placeholder="Adresse publique (facultatif)" style="flex:1"><button class="btn" id="wz-add">Ajouter</button></div>
-    <p class="dim" style="font-size:12.5px">Ensuite : menu Traders suivis → « Évaluer », puis <b>▶ Démarrer</b> (compte démo). Le compte réel se branche plus tard, avec un compte Phantom dédié au bot (menu Connexions).</p>`,
+    <p class="dim" style="font-size:12.5px">Ensuite : <b>▶ Démarrer</b> (compte démo) — HUNTER choisit les traders, le JUDGE vérifie chaque achat. Le compte réel se branche plus tard, avec un compte Phantom dédié au bot (menu Connexions).</p>`,
 ];
 function openWizard() { wzStep = 0; $("#wizard").classList.add("on"); renderWizard(); }
 function closeWizard() { $("#wizard").classList.remove("on"); store.set("wizard-done", "1"); }
@@ -480,8 +555,8 @@ $("#wz-skip").onclick = closeWizard;
 
 /* ================================================================ navigation */
 const LOADERS = {
-  home: () => Promise.all([loadAgents(), loadOpps()]), agents: loadAgents, judge: loadDecisions, traders: loadTraders,
-  journal: loadJournal, settings: loadSettings, connections: () => Promise.all([loadWallet(), loadKeys()]), updates: () => loadUpdate(false), vps: async () => {},
+  home: () => Promise.all([loadAgents(), loadOpps()]), agents: loadAgents, judge: loadDecisions, traders: () => Promise.all([loadHunter(), loadTraders()]),
+  journal: loadJournal, settings: loadSettings, connections: () => Promise.all([loadWallet(), loadKeys(), loadGmgnKey()]), updates: () => loadUpdate(false), vps: async () => {},
 };
 function go(view) {
   if (!LOADERS[view]) view = "home";

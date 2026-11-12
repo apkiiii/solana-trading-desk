@@ -3,8 +3,8 @@
 Chaque nouvelle version publiée sur GitHub avec l'étiquette ``v<version>`` est proposée
 automatiquement dans l'application.
 """
-__version__ = "0.7.0"
-RELEASE_NAME = "Copy trading automatique"
+__version__ = "0.7.1"
+RELEASE_NAME = "Recherche automatique des traders"
 
 
 def parse_version(text: str) -> tuple[int, ...]:

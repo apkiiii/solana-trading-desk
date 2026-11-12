@@ -24,6 +24,7 @@ from typing import Any
 from agents.base import UNAVAILABLE, AgentReport, save_report
 from agents.exit_agent import ExitAgent
 from agents.head import HeadAgent
+from agents.hunter import SOURCE_AUTO, HunterAgent
 from agents.judge import APPROVED, REJECTED, WAIT, Judge, SystemState
 from agents.risk import RiskAgent
 from agents.scout import ScoutAgent
@@ -160,7 +161,7 @@ class CopyTradingEngine:
         head_agent = HeadAgent(self.providers.rpc, self.db, settings, usdc_mint=settings["tokens"]["usdc_mint"])
         head = head_agent.cached_report(event["wallet"], now=self.clock())
         save_report(self.db, head)
-        if head_agent.needs_refresh(event["wallet"], now=self.clock()):
+        if head_agent.needs_refresh(event["wallet"], now=self.clock()) and not self._is_auto(event["wallet"]):
             self._spawn(self._refresh_trader(event["wallet"]))
 
         # Contrôles d'état d'abord : s'ils échouent, le JUDGE refuse sans dépenser de crédits d'API.
@@ -265,6 +266,36 @@ class CopyTradingEngine:
             in_mint=sol if sol_in else mint, out_mint=mint if sol_in else sol,
             in_amount_raw=result.in_amount_raw, out_amount_raw=result.out_amount_raw,
             fee_lamports=result.network_fee_lamports, error=result.error)
+
+    def _is_auto(self, wallet: str) -> bool:
+        return any(t["address"] == wallet and t.get("source") == SOURCE_AUTO for t in self.db.list_traders())
+
+    async def hunt(self) -> AgentReport:
+        """Un passage de HUNTER : recherche, évaluation et remplacement des traders."""
+        settings = self._settings()
+        report = await HunterAgent(getattr(self.providers, "gmgn", None), self.db, settings,
+                                   jupiter=self.providers.jupiter).cycle(now=self.clock())
+        save_report(self.db, report)
+        for change in (report.data or {}).get("changes", []):
+            self.db.add_alert("info", f"HUNTER : {change}")
+        if self.monitor is not None:
+            self.monitor.set_wallets([t["address"] for t in self.db.list_traders(active_only=True)])
+        return report
+
+    async def _hunter_loop(self, stop: asyncio.Event) -> None:
+        while not stop.is_set():
+            settings = self._settings()
+            interval = float(settings["discovery"]["interval_minutes"]) * 60
+            if settings["discovery"]["enabled"] and getattr(self.providers, "gmgn", None) is not None:
+                try:
+                    await self.hunt()
+                except Exception as exc:  # noqa: BLE001
+                    self.last_error = redact(f"HUNTER : {type(exc).__name__}: {exc}")
+                    log.exception("Erreur de HUNTER")
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=interval)
+            except TimeoutError:
+                pass
 
     async def _refresh_trader(self, wallet: str) -> None:
         if wallet in self._head_running:
@@ -379,7 +410,9 @@ class CopyTradingEngine:
                     self.monitor.set_wallets(wallets)
                 settings = self._settings()
                 head = HeadAgent(self.providers.rpc, self.db, settings, usdc_mint=settings["tokens"]["usdc_mint"])
-                for wallet in wallets:
+                manual = [t["address"] for t in self.db.list_traders(active_only=True)
+                          if t.get("source") != SOURCE_AUTO]  # les traders automatiques sont notés par HUNTER
+                for wallet in manual:
                     if head.needs_refresh(wallet, now=self.clock()) and wallet not in self._head_running:
                         self._spawn(self._refresh_trader(wallet))
                         break  # une évaluation à la fois (300 crédits Helius chacune)
@@ -401,7 +434,8 @@ class CopyTradingEngine:
         self.started_at = self.clock()
         self.db.heartbeat("engine", "OK", "démarré")
         try:
-            await asyncio.gather(self.monitor.run(stop), self._exit_loop(stop), self._traders_loop(stop))
+            await asyncio.gather(self.monitor.run(stop), self._exit_loop(stop), self._traders_loop(stop),
+                                 self._hunter_loop(stop))
         finally:
             for task in list(self._tasks):
                 task.cancel()

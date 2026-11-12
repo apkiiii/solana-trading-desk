@@ -105,8 +105,13 @@
 
       <!-- ---------------- Traders -->
       <section class="view" id="view-traders">
-        <div class="page-head"><div><h1>Traders suivis</h1><p>Colle l'adresse publique d'un wallet repéré sur GMGN ou FOMO. L'agent HEAD l'évalue sur son vrai historique ; le bot refusera de copier un trader mal noté.</p></div></div>
+        <div class="page-head"><div><h1>Traders suivis</h1><p>L'agent HUNTER trouve lui-même les meilleurs traders gagnants et remplace ceux qui ne sont pas concluants. Tu peux aussi en ajouter à la main : ils ne seront jamais retirés automatiquement.</p></div></div>
+        <div class="panel" style="margin-bottom:16px">
+          <div class="panel-h"><h2>Recherche automatique (HUNTER)</h2><span class="chip" id="h-chip"><i></i>—</span></div>
+          <div class="panel-b" id="hunter"></div>
+        </div>
         <div class="panel panel-b" style="margin-bottom:16px">
+          <div class="muted" style="font-size:12.5px;margin-bottom:8px">Ajouter un trader à la main (facultatif)</div>
           <div class="row"><input class="input mono" id="t-addr" placeholder="Adresse publique Solana" style="flex:2;min-width:280px"><input class="input" id="t-label" placeholder="Nom (facultatif)" style="flex:1;min-width:160px"><button class="btn gold" id="btn-add-trader">Ajouter</button></div>
         </div>
         <div class="panel"><div class="panel-b" id="traders"></div></div>
@@ -149,6 +154,7 @@
           <div style="display:flex;flex-direction:column;gap:16px">
           <div class="panel"><div class="panel-h"><h2>Wallet du bot (compte Phantom dédié)</h2><span class="chip" id="w-chip"><i></i>—</span></div><div class="panel-b" id="wallet"></div></div>
           <div class="panel"><div class="panel-h"><h2>Clés API</h2></div><div class="panel-b" id="keys"></div></div>
+          <div class="panel"><div class="panel-h"><h2>Clé GMGN (recherche des traders)</h2><span class="chip" id="gk-chip"><i></i>—</span></div><div class="panel-b" id="gmgn-key"></div></div>
           </div>
           <div class="panel"><div class="panel-h"><h2>Diagnostic</h2><button class="btn gold sm" id="btn-diag">Lancer le test</button></div><div class="panel-b">
             <input class="input mono" id="diag-wallet" placeholder="Optionnel : adresse d'un trader à tester">

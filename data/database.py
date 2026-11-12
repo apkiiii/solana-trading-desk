@@ -155,6 +155,21 @@ _MIGRATIONS: list[str] = [
         acknowledged INTEGER NOT NULL DEFAULT 0
     );
     """,
+    # --- version 2 : recherche automatique des traders ----------------------
+    """
+    ALTER TABLE traders ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';
+    CREATE TABLE trader_candidates (
+        address      TEXT PRIMARY KEY,
+        score        REAL,
+        status       TEXT NOT NULL,
+        reason       TEXT,
+        stats_json   TEXT,
+        evaluated_at TEXT,
+        seen_at      TEXT,
+        dropped_at   TEXT
+    );
+    CREATE INDEX idx_candidates_score ON trader_candidates(status, score)
+    """,
 ]
 
 
@@ -306,7 +321,8 @@ class Database:
                          (section, key, old[0] if old else None, new_json, actor, _iso()))
 
     # ------------------------------------------------------------------ traders
-    def upsert_trader(self, address: str, label: str | None = None, *, max_traders: int | None = None) -> None:
+    def upsert_trader(self, address: str, label: str | None = None, *, max_traders: int | None = None,
+                      source: str = "manual") -> None:
         if not is_valid_address(address):
             raise DatabaseError(f"Adresse Solana invalide : {address!r}")
         existing = self.query_one("SELECT address FROM traders WHERE address = ?", (address,))
@@ -316,9 +332,53 @@ class Database:
                 raise DatabaseError(f"Nombre maximal de traders suivis atteint ({max_traders}).")
         now = _iso()
         self.execute(
-            "INSERT INTO traders (address, label, active, added_at, updated_at) VALUES (?, ?, 1, ?, ?) "
+            "INSERT INTO traders (address, label, active, added_at, updated_at, source) VALUES (?, ?, 1, ?, ?, ?) "
             "ON CONFLICT(address) DO UPDATE SET label = COALESCE(excluded.label, traders.label), "
-            "updated_at = excluded.updated_at", (address, label, now, now))
+            "updated_at = excluded.updated_at", (address, label, now, now, source))
+
+    def delete_trader(self, address: str) -> None:
+        self.execute("DELETE FROM traders WHERE address = ?", (address,))
+
+    # ------------------------------------------------------ candidats (HUNTER)
+    def upsert_candidate(self, address: str, *, score: float | None, status: str, reason: str | None,
+                         stats: dict[str, Any], evaluated_at: datetime | None = None) -> None:
+        now = _iso(evaluated_at)
+        self.execute(
+            "INSERT INTO trader_candidates (address, score, status, reason, stats_json, evaluated_at, seen_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(address) DO UPDATE SET score = excluded.score, "
+            "status = CASE WHEN trader_candidates.status = 'dropped' THEN 'dropped' ELSE excluded.status END, "
+            "reason = CASE WHEN trader_candidates.status = 'dropped' THEN trader_candidates.reason "
+            "ELSE excluded.reason END, stats_json = excluded.stats_json, evaluated_at = excluded.evaluated_at, "
+            "seen_at = excluded.seen_at",
+            (address, score, status, reason, json.dumps(stats), now, now))
+
+    def touch_candidate(self, address: str, seen_at: datetime | None = None) -> None:
+        self.execute("INSERT INTO trader_candidates (address, status, seen_at) VALUES (?, 'new', ?) "
+                     "ON CONFLICT(address) DO UPDATE SET seen_at = excluded.seen_at", (address, _iso(seen_at)))
+
+    def drop_candidate(self, address: str, reason: str, at: datetime | None = None) -> None:
+        self.execute("INSERT INTO trader_candidates (address, status, reason, dropped_at, seen_at) "
+                     "VALUES (?, 'dropped', ?, ?, ?) ON CONFLICT(address) DO UPDATE SET status = 'dropped', "
+                     "reason = excluded.reason, dropped_at = excluded.dropped_at",
+                     (address, reason, _iso(at), _iso(at)))
+
+    def release_dropped_candidates(self, before: datetime) -> None:
+        """Fin de la mise à l'écart : le candidat pourra être réévalué."""
+        self.execute("UPDATE trader_candidates SET status = 'new', reason = NULL, dropped_at = NULL "
+                     "WHERE status = 'dropped' AND dropped_at < ?", (_iso(before),))
+
+    def get_candidate(self, address: str) -> dict[str, Any] | None:
+        row = self.query_one("SELECT * FROM trader_candidates WHERE address = ?", (address,))
+        if row:
+            row["stats"] = json.loads(row.pop("stats_json") or "{}")
+        return row
+
+    def list_candidates(self, limit: int = 50) -> list[dict[str, Any]]:
+        rows = self.query_all("SELECT * FROM trader_candidates ORDER BY (status = 'ok') DESC, "
+                              "COALESCE(score, -1) DESC, seen_at DESC LIMIT ?", (limit,))
+        for row in rows:
+            row["stats"] = json.loads(row.pop("stats_json") or "{}")
+        return rows
 
     def set_trader_active(self, address: str, active: bool) -> None:
         self.execute("UPDATE traders SET active = ?, updated_at = ? WHERE address = ?",

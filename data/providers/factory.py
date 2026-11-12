@@ -23,10 +23,12 @@ class Providers:
     jupiter: JupiterClient
     dex: DexScreenerClient
     rug: RugCheckClient
+    gmgn: Any = None  # client GMGN (lecture seule) si une clé API GMGN est enregistrée
 
     async def aclose(self) -> None:
-        for client in (self.rpc, self.jupiter, self.dex, self.rug):
-            await client.aclose()
+        for client in (self.rpc, self.jupiter, self.dex, self.rug, self.gmgn):
+            if client is not None:
+                await client.aclose()
 
 
 def _ws_from_http(url: str) -> str:
@@ -76,4 +78,20 @@ def build_providers(settings: Settings, secrets: ApiSecrets, db: Database | None
     rug_cfg = providers["rugcheck"]
     rug = RugCheckClient(rug_cfg["base_url"], api_key=secrets.rugcheck_api_key,
                          limiter=AsyncRateLimiter(float(rug_cfg["requests_per_second"]), burst=1), **common)
-    return Providers(rpc=rpc, ws_url=ws_url, jupiter=jupiter, dex=dex, rug=rug)
+    gmgn = build_gmgn(settings, secrets, db, transport=transport)
+    return Providers(rpc=rpc, ws_url=ws_url, jupiter=jupiter, dex=dex, rug=rug, gmgn=gmgn)
+
+
+def build_gmgn(settings: Settings, secrets: ApiSecrets, db: Database | None = None, *,
+               transport: httpx.AsyncBaseTransport | None = None) -> Any:
+    """Client GMGN en lecture (recherche de traders). None si aucune clé API GMGN."""
+    if not secrets.gmgn_api_key:
+        return None
+    from data.providers.gmgn import GmgnClient
+
+    def usage(provider: str, requests: int, credits: int, errors: int) -> None:
+        if db is not None:
+            db.add_api_usage(provider, requests=requests, credits=credits, errors=errors)
+
+    return GmgnClient(settings["venues"]["gmgn"]["base_url"], secrets.gmgn_api_key, usage=usage,
+                      transport=transport)

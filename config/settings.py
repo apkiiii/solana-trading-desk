@@ -23,7 +23,7 @@ from core.paths import DEFAULTS_FILE
 if TYPE_CHECKING:
     from data.database import Database
 
-EDITABLE_SECTIONS = frozenset({"capital", "judge", "exit", "execution", "schedule", "demo"})
+EDITABLE_SECTIONS = frozenset({"capital", "judge", "exit", "execution", "schedule", "demo", "discovery"})
 ALLOWED_ACTOR = "dashboard"
 VALID_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -137,6 +137,21 @@ def validate_settings(data: Mapping[str, Any]) -> list[str]:
 
     if not 1 <= data.get("demo", {}).get("start_balance_eur", 50) <= 100_000:
         errors.append("demo.start_balance_eur doit être compris entre 1 et 100 000 €.")
+
+    disc = data.get("discovery", {})
+    if disc:
+        if not 1 <= disc.get("target_traders", 0) <= 10:  # plafonné en plus par capital.max_traders
+            errors.append("discovery.target_traders doit être compris entre 1 et 10.")
+        if not 1 <= disc.get("interval_minutes", 0) <= 1440:
+            errors.append("discovery.interval_minutes doit être compris entre 1 et 1440.")
+        if disc.get("period") not in ("7d", "30d"):
+            errors.append("discovery.period doit être « 7d » ou « 30d ».")
+        if not 1 <= disc.get("candidates_per_cycle", 0) <= 20:
+            errors.append("discovery.candidates_per_cycle doit être compris entre 1 et 20.")
+        for key in ("min_tokens", "max_trades_per_day", "min_avg_hold_seconds", "max_idle_minutes",
+                    "max_copied_loss_eur", "swap_margin", "cooldown_hours", "stats_ttl_minutes"):
+            if disc.get(key, 0) < 0:
+                errors.append(f"discovery.{key} ne peut pas être négatif.")
 
     sch = data.get("schedule", {})
     for key in ("start", "stop"):

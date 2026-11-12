@@ -103,7 +103,7 @@ def test_agents_decisions_journal_and_quit(db, isolated):
     async def scenario(client, desk):
         agents = (await (await client.get("/api/agents")).json())["agents"]
         names = [a["name"] for a in agents]
-        assert names == ["SCOUT", "HEAD", "WHALE", "RISK", "SNIPER", "EXIT", "JUDGE"]
+        assert names == ["HUNTER", "SCOUT", "HEAD", "WHALE", "RISK", "SNIPER", "EXIT", "JUDGE"]
         risk = next(a for a in agents if a["name"] == "RISK")
         assert risk["last"]["status"] == "BLOCK"
         assert (await client.get("/api/decisions")).status == 200
@@ -228,3 +228,26 @@ def test_start_without_helius_key_explains_what_to_do(db, isolated):
         assert (await (await client.get("/api/state")).json())["bot_state"] == "STOPPED"
 
     run_with_client(db, scenario)
+
+
+def test_hunter_lets_the_bot_start_without_manual_traders(db, isolated, monkeypatch):
+    engines = []
+
+    def engine_factory(_providers):
+        engines.append(FakeEngine())
+        return engines[-1]
+
+    async def scenario(client, _desk):
+        status = await (await client.get("/api/hunter")).json()
+        assert status["gmgn_key"] is False and status["settings"]["target_traders"] == 5
+        run = await (await client.post("/api/hunter/run", json={})).json()
+        assert run["status"] == "UNAVAILABLE" and "GMGN" in run["summary"]
+        r = await client.post("/api/bot", json={"action": "start"})
+        assert r.status == 409 and "GMGN" in (await r.json())["error"]
+        monkeypatch.setenv("GMGN_API_KEY", "cle-de-test")
+        r = await client.post("/api/bot", json={"action": "start"})
+        assert r.status == 200
+        status = await (await client.get("/api/hunter")).json()
+        assert status["gmgn_key"] is True and status["running"] is True
+
+    run_with_client(db, scenario, providers_factory=lambda: FakeProviders(), engine_factory=engine_factory)

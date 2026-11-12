@@ -24,7 +24,8 @@ from core.validation import is_valid_address
 from core.version import RELEASE_NAME, __version__
 from data.database import Database, DatabaseError
 from engine.scheduler import entries_window_open, next_change
-from data.providers.factory import build_providers
+from agents.hunter import HunterAgent
+from data.providers.factory import build_gmgn, build_providers
 from engine.copy_trading import CopyTradingEngine
 from security.gmgn_keys import GmgnKeyError, GmgnKeyStore
 from security.secrets import SecretsError, load_secrets, mask, save_api_keys
@@ -32,7 +33,7 @@ from security.trading_wallet import TradingWalletError, TradingWalletStore
 
 log = logging.getLogger(__name__)
 WEB_DIR = BUNDLE_DIR / "web"
-AGENT_NAMES = ("SCOUT", "HEAD", "WHALE", "RISK", "SNIPER", "EXIT", "JUDGE")
+AGENT_NAMES = ("HUNTER", "SCOUT", "HEAD", "WHALE", "RISK", "SNIPER", "EXIT", "JUDGE")
 KEY_NAMES = ("HELIUS_API_KEY", "JUPITER_API_KEY", "GMGN_API_KEY", "RUGCHECK_API_KEY")
 
 
@@ -109,6 +110,8 @@ class DeskServer:
         r.add_get("/api/wallet", self.wallet_info)
         r.add_post("/api/wallet", self.wallet_import)
         r.add_post("/api/wallet/delete", self.wallet_delete)
+        r.add_get("/api/hunter", self.hunter_status)
+        r.add_post("/api/hunter/run", self.hunter_run)
         r.add_get("/api/keys", self.keys)
         r.add_post("/api/keys", self.save_keys)
         r.add_post("/api/diagnose", self.diagnose)
@@ -425,8 +428,9 @@ class DeskServer:
             control = self.db.get_control()
             if control["emergency_stop"] or EMERGENCY_STOP_FILE.exists():
                 return _error("ARRÊT D'URGENCE actif : lève-le d'abord.", 409)
-            if not self.db.list_traders(active_only=True):
-                return _error("Ajoute au moins un trader à copier (menu Traders).", 409)
+            if not self.db.list_traders(active_only=True) and not self._hunter_ready():
+                return _error("Aucun trader à copier : ajoute ta clé API GMGN (gratuite, menu Connexions) pour que "
+                              "le bot trouve lui-même les meilleurs traders, ou ajoute un trader à la main.", 409)
             try:
                 await self.start_engine()
             except SecretsError:
@@ -442,6 +446,55 @@ class DeskServer:
                 await self.stop_engine()
             return _json({"ok": True, "bot_state": "STOPPED"})
         return _error("Action inconnue.")
+
+    # ---------------------------------------------------------------- HUNTER
+    def _hunter_ready(self) -> bool:
+        try:
+            has_key = bool(load_secrets().gmgn_api_key)
+        except SecretsError:
+            has_key = False
+        return has_key and bool(load_settings(self.db)["discovery"]["enabled"])
+
+    async def hunter_status(self, _request: web.Request) -> web.Response:
+        settings = load_settings(self.db)
+        try:
+            has_key = bool(load_secrets().gmgn_api_key)
+        except SecretsError:
+            has_key = False
+        last = self.db.latest_agent_reports("HUNTER", 1)
+        traders = self.db.list_traders(active_only=True)
+        return _json({"gmgn_key": has_key, "settings": dict(settings["discovery"]),
+                      "max_traders": settings["capital"]["max_traders"],
+                      "running": self.engine_running and bool(settings["discovery"]["enabled"]) and has_key,
+                      "last": last[0] if last else None, "followed": len(traders),
+                      "auto": sum(1 for t in traders if t.get("source") == "auto"),
+                      "candidates": [{**c, "followed": c["address"] in {t["address"] for t in traders}}
+                                     for c in self.db.list_candidates(30)]})
+
+    async def hunter_run(self, _request: web.Request) -> web.Response:
+        if self.engine_running and self.engine is not None and hasattr(self.engine, "hunt"):
+            report = await self.engine.hunt()
+        else:
+            settings = load_settings(self.db)
+            secrets = load_secrets()
+            gmgn = build_gmgn(settings, secrets, self.db)
+            jupiter = providers = None
+            if gmgn is not None:
+                try:
+                    providers = self.providers_factory()
+                    jupiter = getattr(providers, "jupiter", None)  # prix du SOL (facultatif)
+                except SecretsError:
+                    providers = None
+            try:
+                report = await HunterAgent(gmgn, self.db, settings, jupiter=jupiter).cycle()
+            finally:
+                if gmgn is not None:
+                    await gmgn.aclose()
+                if providers is not None and hasattr(providers, "aclose"):
+                    await providers.aclose()
+            from agents.base import save_report
+            save_report(self.db, report)
+        return _json({"status": report.status, "summary": report.summary, "reasons": report.reasons})
 
     # ---------------------------------------------------------------- wallet
     async def _wallet_balance(self) -> dict[str, Any] | None:

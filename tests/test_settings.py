@@ -16,7 +16,7 @@ def test_defaults_are_valid_and_match_spec():
     assert cap["fee_reserve_eur"] == 5.0
     assert cap["max_position_eur"] == 2.0
     assert cap["max_open_positions"] == 2
-    assert cap["max_traders"] == 3
+    assert cap["max_traders"] == 5  # demande de l'utilisateur (12/11/2026) : au moins 5 traders copiés
     assert cap["max_daily_loss_eur"] == 1.5
     assert defaults["schedule"]["timezone"] == "Europe/Paris"
 

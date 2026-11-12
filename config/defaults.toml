@@ -1,7 +1,7 @@
 # =============================================================================
 # MY SOLANA TRADING DESK — valeurs par défaut
 #
-# Les sections [capital], [demo], [judge], [exit], [execution] et [schedule] peuvent être
+# Les sections capital, demo, judge, exit, execution, schedule et discovery peuvent être
 # modifiées depuis le tableau de bord (et uniquement par lui). Les modifications
 # sont enregistrées dans la base de données ; ce fichier reste la référence
 # d'origine. Les agents ne reçoivent qu'une copie en lecture seule.
@@ -17,7 +17,7 @@ trading_budget_eur = 17.5     # montant maximal investi en même temps
 fee_reserve_eur = 5.0         # SOL gardé pour payer les frais
 max_position_eur = 2.0        # montant maximal d'un achat
 max_open_positions = 2        # positions ouvertes en même temps
-max_traders = 3               # wallets suivis au maximum
+max_traders = 5               # wallets suivis au maximum
 max_daily_loss_eur = 1.5      # au-delà : plus aucun nouvel achat ce jour-là
 
 [demo]
@@ -43,6 +43,21 @@ take_profit_pct = 50.0        # vente si gain latent >= 50 %
 follow_trader_sells = true    # vendre quand le trader copié vend
 max_hold_hours = 24.0         # sortie au-delà de cette durée
 min_liquidity_usd = 5000.0    # sortie si la liquidité tombe sous ce seuil
+
+[discovery]
+enabled = true                    # le bot cherche lui-même les meilleurs traders (agent HUNTER, données GMGN)
+target_traders = 5                # nombre de traders copiés en permanence
+interval_minutes = 2.0            # vérification et remplacement des traders non concluants
+period = "7d"                     # période des statistiques GMGN : "7d" ou "30d"
+candidates_per_cycle = 6          # candidats évalués à chaque passage (limite du forfait gratuit GMGN)
+stats_ttl_minutes = 60            # une évaluation reste valable 1 h
+min_tokens = 10                   # tokens tradés minimum sur la période
+max_trades_per_day = 150          # au-delà : robot impossible à suivre
+min_avg_hold_seconds = 60         # revend trop vite pour être copié avec quelques secondes de retard
+max_idle_minutes = 60             # aucun trade depuis 60 min : non concluant
+max_copied_loss_eur = 1.0         # nos copies de ce trader ont perdu 1 € : non concluant
+swap_margin = 10.0                # un candidat remplace le plus faible s'il a 10 points de plus
+cooldown_hours = 6.0              # un trader écarté n'est pas repris avant 6 h
 
 [execution]
 venue = "jupiter"                     # exécution : Jupiter, signée localement par le compte Phantom dédié au bot
